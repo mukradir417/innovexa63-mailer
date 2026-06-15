@@ -13,15 +13,14 @@ import '../../core/app_colors.dart';
 import 'package:excel/excel.dart' hide Border, TextSpan;
 import 'package:googleapis/gmail/v1.dart' as gmail;
 import 'package:googleapis_auth/auth_io.dart' as auth;
-import 'package:flutter/services.dart';
 
 // ================================================================
-//  DASHBOARD SCREEN - INNOVEXA63 MAILER ULTRA 7.0
-//  NEW v7: Google API JSON send, Excel export (sent/failed sheets),
-//          Format selector (Plain/HTML/Template), Random name/subject
-//          pools, inline text+HTML dual, App Password optional,
-//          per-task method selector, admin force-logout real-time
-//  NOTHING DELETED — All v6 features kept + upgraded
+//  DASHBOARD SCREEN - INNOVEXA63 MAILER ULTRA 8.0
+//  NEW v8: Full Multi-Task ISOLATION fix —
+//          Each task has its own: logs, sent/failed/pending counts,
+//          send state, pause state, SMTP limit counter.
+//          Switching tasks shows THAT task's data only.
+//  NOTHING DELETED — All v7 features kept + upgraded
 // ================================================================
 
 class DashboardScreen extends StatefulWidget {
@@ -34,11 +33,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     with TickerProviderStateMixin {
   StreamSubscription<DocumentSnapshot>? _userStatusSub;
 
-  // ── Tasks ──
+  // ── Tasks ── Each task is fully independent
   final List<_MailTask> _tasks = [_MailTask(id: 1)];
   int _activeTask = 0;
 
-  // ── IP & Proxy Rotation ──
+  // ── IP & Proxy Rotation (global) ──
   List<String> _ipList = [];
   bool _ipRotationEnabled = false;
   bool _randomIpRotation = true;
@@ -52,20 +51,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   String _proxyUser = '';
   String _proxyPass = '';
 
-  // ── Delivery Stats ──
-  int _totalSent = 0;
-  int _totalFailed = 0;
-  int _totalPending = 0;
-  bool _isSending = false;
-  bool _isPaused = false;
-
-  // ── Per-SMTP send limit ──
-  int _maxSendPerSmtp = 0;
-  int _sentFromCurrentSmtp = 0;
-
-  // ── Logs ──
-  final List<_LogEntry> _logs = [];
-  bool _saveLogs = false;
+  // ── SMTP Test (per-task result shown in UI) ──
+  String _smtpTestResult = '';
+  bool _smtpTesting = false;
 
   // ── License info ──
   Map<String, dynamic> _userData = {};
@@ -76,11 +64,15 @@ class _DashboardScreenState extends State<DashboardScreen>
   Timer? _countdownTimer;
   Duration _timeRemaining = Duration.zero;
 
-  // ── SMTP Test ──
-  String _smtpTestResult = '';
-  bool _smtpTesting = false;
-
   final _ipInputCtrl = TextEditingController();
+
+  // ── Helpers to read active task stats ──
+  _MailTask get _task => _tasks[_activeTask];
+  int get _totalSent => _task.totalSent;
+  int get _totalFailed => _task.totalFailed;
+  int get _totalPending => _task.totalPending;
+  bool get _isSending => _task.isSending;
+  bool get _isPaused => _task.isPaused;
 
   @override
   void initState() {
@@ -196,7 +188,11 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _forceLogout(String reason) async {
     _userStatusSub?.cancel();
     _countdownTimer?.cancel();
-    setState(() => _isSending = false);
+    // Stop all tasks
+    for (final t in _tasks) {
+      t.isSending = false;
+      t.isPaused = false;
+    }
     await FirebaseAuth.instance.signOut();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -231,18 +227,13 @@ class _DashboardScreenState extends State<DashboardScreen>
       return;
     }
     _showSnack(context, 'Authenticating with Google API...', AppColors.warning);
-
     try {
       final jsonString = await File(task.googleJsonPath).readAsString();
       final credentials = auth.ServiceAccountCredentials.fromJson(jsonString);
-
       final client = await auth.clientViaServiceAccount(credentials, [
         gmail.GmailApi.mailGoogleComScope,
       ]);
-
-      setState(() {
-        task.googleApiToken = 'REAL-AUTH-SUCCESS';
-      });
+      setState(() => task.googleApiToken = 'REAL-AUTH-SUCCESS');
       client.close();
       _showSnack(
         context,
@@ -388,6 +379,14 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _deleteTask() {
     if (_tasks.length <= 1) {
       _showSnack(context, 'At least 1 task required!', AppColors.warning);
+      return;
+    }
+    if (_task.isSending) {
+      _showSnack(
+        context,
+        'Stop sending before deleting task!',
+        AppColors.warning,
+      );
       return;
     }
     setState(() {
@@ -607,7 +606,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  SMTP SERVER BUILDER (Fixed Gmail Prefix Conflict)
+  //  SMTP SERVER BUILDER
   // ================================================================
   SmtpServer _buildSmtpServer(_MailTask task) {
     final host = task.smtpHostCtrl.text.trim();
@@ -615,7 +614,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     final user = task.emailCtrl.text.trim();
     final pass = task.appPassCtrl.text.trim();
 
-    // Fix: Using explicit SmtpServer instead of gmail() helper
     if (host.contains('gmail')) {
       return SmtpServer(
         'smtp.gmail.com',
@@ -675,7 +673,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  REAL GOOGLE API JSON SEND (100% Authentic API Call)
+  //  GOOGLE API JSON SEND
   // ================================================================
   Future<bool> _sendViaGoogleJson({
     required _MailTask task,
@@ -686,7 +684,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     required String fromDisplay,
   }) async {
     try {
-      // ১. JSON ফাইল রিড এবং রিয়েল অথেনটিকেশন
       final jsonStr = await File(task.googleJsonPath).readAsString();
       final credentials = auth.ServiceAccountCredentials.fromJson(jsonStr);
       final client = await auth.clientViaServiceAccount(credentials, [
@@ -694,7 +691,6 @@ class _DashboardScreenState extends State<DashboardScreen>
       ]);
       final gmailApi = gmail.GmailApi(client);
 
-      // ২. ইমেইল ফরম্যাট তৈরি (Base64 Encode)
       String rawEmail =
           "From: $fromDisplay <${task.emailCtrl.text.trim()}>\n"
           "To: $toEmail\n"
@@ -705,19 +701,17 @@ class _DashboardScreenState extends State<DashboardScreen>
       final message = gmail.Message()
         ..raw = base64UrlEncode(utf8.encode(rawEmail));
 
-      // ৩. Google সার্ভার দিয়ে সরাসরি মেইল ফায়ার করা
       await gmailApi.users.messages.send(message, 'me');
-
       client.close();
-      return true; // মেইল সফলভাবে গেলে Sent ✓ দেখাবে
+      return true;
     } catch (e) {
       debugPrint('Google API Error: $e');
-      return false; // ফেইল করলে বা বাউন্স খেলে Failed ✗ দেখাবে
+      return false;
     }
   }
 
   // ================================================================
-  //  SEND ONE EMAIL (SMTP)
+  //  SEND ONE EMAIL
   // ================================================================
   Future<bool> _sendOneEmail({
     required _MailTask task,
@@ -747,7 +741,6 @@ class _DashboardScreenState extends State<DashboardScreen>
         ..recipients.add(Address(toEmail, toName))
         ..subject = subject;
 
-      // Load HTML file body
       String finalBody = body;
       if (task.descType == 'HTML File' && task.bodyCtrl.text.isNotEmpty) {
         try {
@@ -764,7 +757,6 @@ class _DashboardScreenState extends State<DashboardScreen>
         msg.text = finalBody;
       }
 
-      // লিস্টে থাকা সব ফাইল একে একে মেইলের সাথে যুক্ত হবে
       if (task.attachmentPaths.isNotEmpty) {
         for (String path in task.attachmentPaths) {
           if (File(path).existsSync()) {
@@ -789,10 +781,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  MAIN SEND LOOP
+  //  MAIN SEND LOOP — PER-TASK ISOLATED
   // ================================================================
   Future<void> _startSending() async {
     final task = _tasks[_activeTask];
+    final taskIndex = _activeTask; // capture index at start
+
     if (task.recipientList.isEmpty) {
       _showSnack(
         context,
@@ -803,32 +797,36 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
     if (!_validateSmtp(task)) return;
 
+    // ── Reset THIS task's stats only ──
     setState(() {
-      _isSending = true;
-      _isPaused = false;
-      _totalSent = 0;
-      _totalFailed = 0;
-      _totalPending = task.recipientList.length;
-      _sentFromCurrentSmtp = 0;
-      if (!_saveLogs) _logs.clear();
+      task.isSending = true;
+      task.isPaused = false;
+      task.totalSent = 0;
+      task.totalFailed = 0;
+      task.totalPending = task.recipientList.length;
+      task.sentFromCurrentSmtp = 0;
+      task.logs.clear();
     });
+
     _showSnack(
       context,
-      '▶ Sending started — ${task.recipientList.length} emails queued',
+      '▶ Task ${task.id}: Sending ${task.recipientList.length} emails',
       AppColors.successGreen,
     );
 
-    for (int i = 0; i < task.recipientList.length; i++) {
-      if (!_isSending) break;
-      while (_isPaused && _isSending)
-        await Future.delayed(const Duration(milliseconds: 300));
-      if (!_isSending) break;
+    final maxSend = task.maxSendPerSmtp;
 
-      if (_maxSendPerSmtp > 0 && _sentFromCurrentSmtp >= _maxSendPerSmtp) {
-        setState(() => _isSending = false);
+    for (int i = 0; i < task.recipientList.length; i++) {
+      if (!task.isSending) break;
+      while (task.isPaused && task.isSending)
+        await Future.delayed(const Duration(milliseconds: 300));
+      if (!task.isSending) break;
+
+      if (maxSend > 0 && task.sentFromCurrentSmtp >= maxSend) {
+        setState(() => task.isSending = false);
         _showSnack(
           context,
-          '⚡ Auto-stopped: SMTP limit $_maxSendPerSmtp reached!',
+          '⚡ Task ${task.id}: Auto-stopped at $maxSend limit!',
           AppColors.warning,
         );
         break;
@@ -850,7 +848,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       else if (_ipRotationEnabled && _ipList.isNotEmpty)
         usedIp = i % _ipRotateEvery == 0 ? _getNextIp() : _currentIp;
 
-      // Spoof name: pool or single
+      // Spoof name
       String currentSpoof = task.spoofNameCtrl.text.trim().isNotEmpty
           ? task.spoofNameCtrl.text.trim()
           : task.emailCtrl.text.trim();
@@ -858,13 +856,13 @@ class _DashboardScreenState extends State<DashboardScreen>
         currentSpoof =
             task.spoofNamesList[Random().nextInt(task.spoofNamesList.length)];
 
-      // Subject: pool or single
+      // Subject
       String currentSubject = task.subjectCtrl.text;
       if (task.subjectMultiple && task.subjectsList.isNotEmpty)
         currentSubject =
             task.subjectsList[Random().nextInt(task.subjectsList.length)];
 
-      // Body: pool or single
+      // Body
       String currentBody = task.bodyCtrl.text;
       if (task.bodyMultiple && task.bodyList.isNotEmpty)
         currentBody = task.bodyList[Random().nextInt(task.bodyList.length)];
@@ -893,13 +891,13 @@ class _DashboardScreenState extends State<DashboardScreen>
       // Delay
       if (i > 0 && task.mailDelay > 0) {
         for (double elapsed = 0; elapsed < task.mailDelay; elapsed += 0.3) {
-          if (!_isSending) break;
-          while (_isPaused && _isSending)
+          if (!task.isSending) break;
+          while (task.isPaused && task.isSending)
             await Future.delayed(const Duration(milliseconds: 300));
           await Future.delayed(const Duration(milliseconds: 300));
         }
       }
-      if (!_isSending) break;
+      if (!task.isSending) break;
 
       final success = await _sendOneEmail(
         task: task,
@@ -911,7 +909,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       );
 
       final logEntry = _LogEntry(
-        sNo: _totalSent + _totalFailed + 1,
+        sNo: task.totalSent + task.totalFailed + 1,
         sender: currentSpoof,
         recipient: recipient,
         mailId: currentSubject,
@@ -925,20 +923,23 @@ class _DashboardScreenState extends State<DashboardScreen>
         attachmentName: task.attachmentNames.join(', '),
       );
 
+      // ── Update THIS task's stats only ──
       setState(() {
         if (success) {
-          _totalSent++;
-          _sentFromCurrentSmtp++;
-        } else
-          _totalFailed++;
-        _totalPending--;
-        _logs.insert(0, logEntry);
+          task.totalSent++;
+          task.sentFromCurrentSmtp++;
+        } else {
+          task.totalFailed++;
+        }
+        task.totalPending--;
+        task.logs.insert(0, logEntry);
       });
 
-      if (_saveLogs) {
+      if (task.saveLogs) {
         try {
           await FirebaseFirestore.instance.collection('send_logs').add({
             'userId': _resolvedUserId,
+            'taskId': task.id,
             'sNo': logEntry.sNo,
             'sender': logEntry.sender,
             'recipient': logEntry.recipient,
@@ -951,39 +952,46 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
     }
 
-    if (_isSending) {
-      setState(() => _isSending = false);
+    if (task.isSending) {
+      setState(() => task.isSending = false);
       _showSnack(
         context,
-        '✓ Complete! Sent: $_totalSent | Failed: $_totalFailed',
+        '✓ Task ${task.id} Complete! Sent: ${task.totalSent} | Failed: ${task.totalFailed}',
         AppColors.successGreen,
       );
     }
   }
 
   void _stopSending() {
+    final task = _task;
     setState(() {
-      _isSending = false;
-      _isPaused = false;
+      task.isSending = false;
+      task.isPaused = false;
     });
     _showSnack(
       context,
-      '■ Stopped. Sent: $_totalSent | Failed: $_totalFailed',
+      '■ Task ${task.id} Stopped. Sent: ${task.totalSent} | Failed: ${task.totalFailed}',
       AppColors.dangerRed,
     );
   }
 
   void _pauseResumeSending() {
-    setState(() => _isPaused = !_isPaused);
+    setState(() => _task.isPaused = !_task.isPaused);
     _showSnack(
       context,
-      _isPaused ? '⏸ Paused...' : '▶ Resumed!',
-      _isPaused ? AppColors.warning : AppColors.successGreen,
+      _task.isPaused
+          ? '⏸ Task ${_task.id} Paused...'
+          : '▶ Task ${_task.id} Resumed!',
+      _task.isPaused ? AppColors.warning : AppColors.successGreen,
     );
   }
 
   void _clearAll() {
-    final task = _tasks[_activeTask];
+    final task = _task;
+    if (task.isSending) {
+      _showSnack(context, 'Stop sending before clearing!', AppColors.warning);
+      return;
+    }
     setState(() {
       task.bodyCtrl.clear();
       task.spoofNameCtrl.clear();
@@ -996,14 +1004,14 @@ class _DashboardScreenState extends State<DashboardScreen>
       task.attachmentPaths.clear();
       task.attachmentNames.clear();
       task.spamScore = '—';
-      _logs.clear();
-      _totalSent = 0;
-      _totalFailed = 0;
-      _totalPending = 0;
-      _sentFromCurrentSmtp = 0;
+      task.logs.clear();
+      task.totalSent = 0;
+      task.totalFailed = 0;
+      task.totalPending = 0;
+      task.sentFromCurrentSmtp = 0;
       _smtpTestResult = '';
     });
-    _showSnack(context, '✓ All cleared!', AppColors.textMuted);
+    _showSnack(context, '✓ Task ${task.id} cleared!', AppColors.textMuted);
   }
 
   String _randomString(int len) {
@@ -1015,21 +1023,19 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  EXCEL EXPORT — Sent & Failed sheets
+  //  EXCEL EXPORT — uses active task logs
   // ================================================================
   Future<void> _exportExcel() async {
-    if (_logs.isEmpty) {
+    final task = _task;
+    if (task.logs.isEmpty) {
       _showSnack(context, 'No logs to export!', AppColors.warning);
       return;
     }
-
     try {
       final xl = Excel.createExcel();
       final sent = xl['Sent'];
       final failed = xl['Failed'];
       final all = xl['All'];
-
-      // Headers
       final headers = [
         'S.No',
         'Email',
@@ -1048,9 +1054,8 @@ class _DashboardScreenState extends State<DashboardScreen>
           );
         }
       }
-
       int sentRow = 1, failedRow = 1, allRow = 1;
-      for (final log in _logs.reversed) {
+      for (final log in task.logs.reversed) {
         final timeStr =
             '${log.timestamp.hour.toString().padLeft(2, '0')}:${log.timestamp.minute.toString().padLeft(2, '0')}:${log.timestamp.second.toString().padLeft(2, '0')}';
         final rowData = [
@@ -1062,7 +1067,6 @@ class _DashboardScreenState extends State<DashboardScreen>
           log.status,
           timeStr,
         ];
-
         void writeRow(Sheet sh, int r) {
           for (int c = 0; c < rowData.length; c++) {
             sh
@@ -1079,16 +1083,11 @@ class _DashboardScreenState extends State<DashboardScreen>
         else
           writeRow(failed, failedRow++);
       }
-
-      // Remove default empty sheet
       xl.delete('Sheet1');
-
-      // Save to temp directory
       final bytes = xl.encode()!;
       final now = DateTime.now();
-      final taskName = 'Task${_activeTask + 1}';
       final filename =
-          'INNOVEXA63_${taskName}_${now.day}-${now.month}-${now.year}_${now.hour}${now.minute}.xlsx';
+          'INNOVEXA63_Task${task.id}_${now.day}-${now.month}-${now.year}_${now.hour}${now.minute}.xlsx';
       final dir = await _getDownloadsPath();
       final file = File('$dir/$filename');
       await file.writeAsBytes(bytes);
@@ -1137,11 +1136,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                 children: [
                   _modalTitle(
                     Icons.upload_file_rounded,
-                    'LOAD RECIPIENTS — Excel / CSV / Paste',
+                    'LOAD RECIPIENTS — Excel / CSV / Paste (Task ${_tasks[taskIndex].id})',
                     AppColors.primaryCyan,
                   ),
-
-                  // Instructions
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(12),
@@ -1197,7 +1194,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: const Text(
-                            'john@gmail.com, John Doe, 5000, New York\nalex@yahoo.com,,2000,Texas   ← name auto "Alex"\nsara.smith@outlook.com         ← name auto "Sara Smith"',
+                            'john@gmail.com, John Doe, 5000, New York\nalex@yahoo.com,,2000,Texas\nsara.smith@outlook.com',
                             style: TextStyle(
                               color: AppColors.successGreen,
                               fontSize: 10,
@@ -1210,7 +1207,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ),
                   ),
                   const SizedBox(height: 14),
-
                   Row(
                     children: [
                       Expanded(
@@ -1506,7 +1502,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             children: [
               _modalTitle(
                 Icons.table_view_rounded,
-                'DATA PREVIEW  —  ${task.recipientData.length} records',
+                'DATA PREVIEW (Task ${task.id})  —  ${task.recipientData.length} records',
                 AppColors.primaryCyan,
               ),
               Container(
@@ -1610,8 +1606,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  /// ================================================================
-  //  MULTIPLE CSV / EXCEL MODAL (subjects, names, bodies)
+  // ================================================================
+  //  MULTIPLE CSV MODAL
   // ================================================================
   void _showGenericCsvModal(String title, ValueChanged<List<String>> onSaved) {
     final textCtrl = TextEditingController();
@@ -1642,7 +1638,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
                 ),
                 child: const Text(
-                  '💡 Instructions:\n• One item per line (Column A if Excel)\n• Items will be selected RANDOMLY for each email\n• Supports 100+ items (upload CSV/Excel for large lists)',
+                  '💡 Instructions:\n• One item per line (Column A if Excel)\n• Items will be selected RANDOMLY for each email\n• Supports 100+ items',
                   style: TextStyle(
                     color: AppColors.secondaryPurple,
                     fontSize: 10,
@@ -1698,9 +1694,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           final filePath = result!.files.single.path!;
                           final ext = filePath.split('.').last.toLowerCase();
                           String fileContent = '';
-
                           if (ext == 'xlsx' || ext == 'xls') {
-                            // Excel ফাইল হলে রিড করে শুধু প্রথম কলামটা (Column A) নিবে
                             final bytes = await File(filePath).readAsBytes();
                             final xl = Excel.decodeBytes(bytes);
                             List<String> items = [];
@@ -1712,27 +1706,21 @@ class _DashboardScreenState extends State<DashboardScreen>
                                   items.add(row[0]!.value.toString().trim());
                                 }
                               }
-                              break; // শুধু প্রথম শিট রিড করবে
+                              break;
                             }
                             fileContent = items.join('\n');
                           } else {
-                            // CSV বা TXT হলে সরাসরি রিড করবে
                             fileContent = await File(filePath).readAsString();
                           }
-
                           textCtrl.text = fileContent;
                           _showSnack(
                             ctx,
-                            '✓ File loaded successfully!',
+                            '✓ File loaded!',
                             AppColors.successGreen,
                           );
                         }
                       } catch (e) {
-                        _showSnack(
-                          ctx,
-                          'Error reading file: $e',
-                          AppColors.dangerRed,
-                        );
+                        _showSnack(ctx, 'Error: $e', AppColors.dangerRed);
                       }
                     },
                   ),
@@ -2069,7 +2057,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   //  INBOX TOOLS MODAL
   // ================================================================
   void _showInboxToolsModal() {
-    final t = _tasks[_activeTask];
+    final t = _task;
     bool macSpoof = t.macSpoofEnabled;
     bool domainMix = t.domainMixEnabled;
     bool pcBypass = t.pcProtectionBypass;
@@ -2092,7 +2080,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 children: [
                   _modalTitle(
                     Icons.inbox_rounded,
-                    'INBOX DELIVERY & ANTI-SPAM TOOLS',
+                    'INBOX DELIVERY & ANTI-SPAM TOOLS (Task ${t.id})',
                     AppColors.successGreen,
                   ),
                   _inboxSection('ANTI-SPAM EVASION', AppColors.dangerRed, [
@@ -2306,8 +2294,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowMultiple:
-            true, // এখানে true করে দেওয়া হলো যেন একসাথে অনেক ফাইল নেওয়া যায়
+        allowMultiple: true,
         allowedExtensions: [
           'pdf',
           'jpg',
@@ -2324,7 +2311,6 @@ class _DashboardScreenState extends State<DashboardScreen>
       );
       if (result != null && result.files.isNotEmpty) {
         setState(() {
-          // সব ফাইলের পাথ এবং নাম লিস্টে সেভ হবে
           task.attachmentPaths = result.paths.whereType<String>().toList();
           task.attachmentNames = result.files.map((f) => f.name).toList();
         });
@@ -2335,7 +2321,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         );
       }
     } catch (e) {
-      _showSnack(context, 'Error picking files: $e', AppColors.dangerRed);
+      _showSnack(context, 'Error: $e', AppColors.dangerRed);
     }
   }
 
@@ -2435,7 +2421,11 @@ class _DashboardScreenState extends State<DashboardScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _modalTitle(Icons.shield_rounded, 'SPAM ANALYSIS', col),
+              _modalTitle(
+                Icons.shield_rounded,
+                'SPAM ANALYSIS — Task ${task.id}',
+                col,
+              ),
               Row(
                 children: [
                   const Text(
@@ -2497,7 +2487,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  TAG GUIDE MODAL (Fixed Overflow Issue)
+  //  TAG GUIDE MODAL
   // ================================================================
   void _showTagGuide() {
     showDialog(
@@ -2506,7 +2496,6 @@ class _DashboardScreenState extends State<DashboardScreen>
         backgroundColor: Colors.transparent,
         child: Container(
           width: 560,
-          // BoxConstraints অ্যাড করা হয়েছে যেন স্ক্রিনের বাইরে না যায়
           constraints: BoxConstraints(
             maxHeight: MediaQuery.of(context).size.height * 0.85,
           ),
@@ -2521,7 +2510,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                 'DYNAMIC TAG GUIDE',
                 AppColors.secondaryPurple,
               ),
-              // Flexible এবং SingleChildScrollView অ্যাড করা হয়েছে স্ক্রল করার জন্য
               Flexible(
                 child: SingleChildScrollView(
                   child: Container(
@@ -2674,15 +2662,20 @@ class _DashboardScreenState extends State<DashboardScreen>
       );
 
   // ================================================================
-  //  SEND REPORT MODAL
+  //  SEND REPORT MODAL — shows ACTIVE task logs only
   // ================================================================
   void _showSendReport() {
-    if (_logs.isEmpty) {
-      _showSnack(context, 'No logs yet!', AppColors.warning);
+    final task = _task;
+    if (task.logs.isEmpty) {
+      _showSnack(
+        context,
+        'No logs for Task ${task.id} yet!',
+        AppColors.warning,
+      );
       return;
     }
-    final sent = _logs.where((l) => l.success).toList();
-    final failed = _logs.where((l) => !l.success).toList();
+    final sent = task.logs.where((l) => l.success).toList();
+    final failed = task.logs.where((l) => !l.success).toList();
 
     showDialog(
       context: context,
@@ -2698,14 +2691,14 @@ class _DashboardScreenState extends State<DashboardScreen>
             children: [
               _modalTitle(
                 Icons.summarize_rounded,
-                'SEND REPORT SHEET',
+                'SEND REPORT — Task ${task.id}',
                 AppColors.successGreen,
               ),
               Row(
                 children: [
                   _reportStat(
                     'Total',
-                    '${_logs.length}',
+                    '${task.logs.length}',
                     AppColors.primaryCyan,
                   ),
                   const SizedBox(width: 12),
@@ -2723,8 +2716,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                   const SizedBox(width: 12),
                   _reportStat(
                     'Success Rate',
-                    _logs.isNotEmpty
-                        ? '${(sent.length / _logs.length * 100).toStringAsFixed(1)}%'
+                    task.logs.isNotEmpty
+                        ? '${(sent.length / task.logs.length * 100).toStringAsFixed(1)}%'
                         : '0%',
                     AppColors.warning,
                   ),
@@ -2773,9 +2766,9 @@ class _DashboardScreenState extends State<DashboardScreen>
               ),
               Expanded(
                 child: ListView.builder(
-                  itemCount: _logs.length,
+                  itemCount: task.logs.length,
                   itemBuilder: (_, i) {
-                    final log = _logs[i];
+                    final log = task.logs[i];
                     return Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -2941,12 +2934,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   // ================================================================
   @override
   Widget build(BuildContext context) {
-    final task = _tasks[_activeTask];
+    final task = _task;
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Column(
         children: [
-          _buildTopBar(),
+          _buildTopBar(task),
           _buildLicenseBanner(),
           Expanded(
             child: Row(
@@ -2965,14 +2958,14 @@ class _DashboardScreenState extends State<DashboardScreen>
               ],
             ),
           ),
-          _buildLogTable(),
+          _buildLogTable(task),
         ],
       ),
     );
   }
 
   // ── TOP BAR ──
-  Widget _buildTopBar() {
+  Widget _buildTopBar(_MailTask task) {
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -3005,7 +2998,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
                 ),
                 TextSpan(
-                  text: ' MAILER ULTRA 7.0',
+                  text: ' MAILER ULTRA 8.0',
                   style: TextStyle(
                     color: AppColors.textMuted,
                     fontSize: 10,
@@ -3024,13 +3017,18 @@ class _DashboardScreenState extends State<DashboardScreen>
               AppColors.secondaryPurple,
             ),
           ],
-          if (_isSending) ...[
-            const SizedBox(width: 8),
-            _statusPill(
-              _isPaused ? 'PAUSED' : 'SENDING...',
-              _isPaused ? AppColors.warning : AppColors.successGreen,
-            ),
-          ],
+          // Show status for ALL sending tasks
+          ..._tasks
+              .where((t) => t.isSending)
+              .map(
+                (t) => Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: _statusPill(
+                    t.isPaused ? 'T${t.id} PAUSED' : 'T${t.id} SENDING...',
+                    t.isPaused ? AppColors.warning : AppColors.successGreen,
+                  ),
+                ),
+              ),
           const Spacer(),
           _topIconBtn(
             Icons.dns_rounded,
@@ -3044,17 +3042,17 @@ class _DashboardScreenState extends State<DashboardScreen>
             AppColors.warning,
             _showInboxToolsModal,
           ),
-          if (_logs.isNotEmpty)
+          if (task.logs.isNotEmpty)
             _topIconBtn(
               Icons.summarize_rounded,
-              'Send Report',
+              'Send Report (Task ${task.id})',
               AppColors.primaryCyan,
               _showSendReport,
             ),
-          if (_logs.isNotEmpty)
+          if (task.logs.isNotEmpty)
             _topIconBtn(
               Icons.download_rounded,
-              'Export Excel',
+              'Export Excel (Task ${task.id})',
               AppColors.successGreen,
               _exportExcel,
             ),
@@ -3120,7 +3118,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     ),
   );
 
-  // ── TASK TABS ──
+  // ── TASK TABS ── show send indicator per-task
   Widget _buildTaskTabs() {
     return Container(
       color: AppColors.sidebar,
@@ -3151,12 +3149,14 @@ class _DashboardScreenState extends State<DashboardScreen>
                 ),
                 child: Row(
                   children: [
-                    if (_isSending && i == _activeTask)
-                      const SizedBox(
+                    if (t.isSending)
+                      SizedBox(
                         width: 8,
                         height: 8,
                         child: CircularProgressIndicator(
-                          color: AppColors.successGreen,
+                          color: t.isPaused
+                              ? AppColors.warning
+                              : AppColors.successGreen,
                           strokeWidth: 1.5,
                         ),
                       )
@@ -3170,7 +3170,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                     const SizedBox(width: 4),
                     Text(
-                      'Task ${t.id}${_isSending && i == _activeTask ? (_isPaused ? ' (PAUSED)' : ' (ACTIVE)') : ''}',
+                      'Task ${t.id}${t.isSending ? (t.isPaused ? ' ⏸' : ' ▶') : ''}'
+                      '${t.recipientList.isNotEmpty ? ' (${t.recipientList.length})' : ''}',
                       style: TextStyle(
                         color: active
                             ? AppColors.primaryCyan
@@ -3181,6 +3182,28 @@ class _DashboardScreenState extends State<DashboardScreen>
                             : FontWeight.normal,
                       ),
                     ),
+                    // Show mini sent count if task has logs
+                    if (t.logs.isNotEmpty) ...[
+                      const SizedBox(width: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.successGreen.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '${t.totalSent}✓',
+                          style: const TextStyle(
+                            color: AppColors.successGreen,
+                            fontSize: 8,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -3236,13 +3259,13 @@ class _DashboardScreenState extends State<DashboardScreen>
       ),
       child: Column(
         children: [
-          _panelHeader('ACCOUNT & SMTP SETTINGS'),
+          _panelHeader('ACCOUNT & SMTP SETTINGS — Task ${task.id}'),
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(8),
               child: Column(
                 children: [
-                  // ── SEND METHOD ───────────────────────────────────────────
+                  // ── SEND METHOD ───
                   _sectionBox('SEND METHOD', AppColors.primaryCyan, [
                     Wrap(
                       spacing: 4,
@@ -3257,7 +3280,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ]),
                   const SizedBox(height: 6),
 
-                  // ── CREDENTIALS (changes based on method) ─────────────────
+                  // ── CREDENTIALS ───
                   if (task.sendMethod == 'Google API JSON') ...[
                     _sectionBox('GOOGLE API CREDENTIALS', AppColors.warning, [
                       _labelInput(
@@ -3330,7 +3353,37 @@ class _DashboardScreenState extends State<DashboardScreen>
                         ),
                       ),
                       const SizedBox(height: 8),
-                      // ── AUTHENTICATE & RESET BUTTONS ──
+                      // Auth status display
+                      if (task.googleApiToken.isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppColors.successGreen.withOpacity(0.08),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: AppColors.successGreen.withOpacity(0.3),
+                            ),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(
+                                Icons.verified_user_rounded,
+                                color: AppColors.successGreen,
+                                size: 14,
+                              ),
+                              SizedBox(width: 6),
+                              Text(
+                                'Google API Authenticated!',
+                                style: TextStyle(
+                                  color: AppColors.successGreen,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      const SizedBox(height: 6),
                       Row(
                         children: [
                           Expanded(
@@ -3384,13 +3437,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                               ),
                               onPressed: () {
                                 setState(() {
-                                  task.emailCtrl
-                                      .clear(); // ইমেইল অ্যাড্রেস ক্লিয়ার করবে
-                                  task.googleJsonPath =
-                                      ''; // JSON ফাইল ক্লিয়ার করবে
+                                  task.emailCtrl.clear();
+                                  task.googleJsonPath = '';
                                   task.googleJsonName = '';
-                                  task.googleApiToken =
-                                      ''; // টোকেন ক্লিয়ার করবে
+                                  task.googleApiToken = '';
                                 });
                                 _showSnack(
                                   context,
@@ -3581,55 +3631,64 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ],
 
                   const SizedBox(height: 6),
-                  _sectionBox('PER-SMTP SEND LIMIT', AppColors.warning, [
-                    Row(
-                      children: [
-                        const Text(
-                          'Limit:',
-                          style: TextStyle(
-                            color: AppColors.textMuted,
-                            fontSize: 10,
-                          ),
-                        ),
-                        Expanded(
-                          child: Slider(
-                            value: _maxSendPerSmtp.toDouble(),
-                            min: 0,
-                            max: 500,
-                            divisions: 50,
-                            activeColor: AppColors.warning,
-                            onChanged: (v) =>
-                                setState(() => _maxSendPerSmtp = v.toInt()),
-                          ),
-                        ),
-                        SizedBox(
-                          width: 70,
-                          child: Text(
-                            _maxSendPerSmtp == 0
-                                ? '∞ Unlimited'
-                                : '$_maxSendPerSmtp',
-                            style: const TextStyle(
-                              color: AppColors.warning,
+
+                  // ── PER-SMTP SEND LIMIT (per-task) ───
+                  _sectionBox(
+                    'PER-SMTP SEND LIMIT (Task ${task.id})',
+                    AppColors.warning,
+                    [
+                      Row(
+                        children: [
+                          const Text(
+                            'Limit:',
+                            style: TextStyle(
+                              color: AppColors.textMuted,
                               fontSize: 10,
-                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const Text(
-                      'Auto-stops when limit reached',
-                      style: TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 9,
-                        fontStyle: FontStyle.italic,
+                          Expanded(
+                            child: Slider(
+                              value: task.maxSendPerSmtp.toDouble(),
+                              min: 0,
+                              max: 500,
+                              divisions: 50,
+                              activeColor: AppColors.warning,
+                              onChanged: (v) => setState(
+                                () => task.maxSendPerSmtp = v.toInt(),
+                              ),
+                            ),
+                          ),
+                          SizedBox(
+                            width: 70,
+                            child: Text(
+                              task.maxSendPerSmtp == 0
+                                  ? '∞ Unlimited'
+                                  : '${task.maxSendPerSmtp}',
+                              style: const TextStyle(
+                                color: AppColors.warning,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ]),
+                      const Text(
+                        'Auto-stops when limit reached',
+                        style: TextStyle(
+                          color: AppColors.textMuted,
+                          fontSize: 9,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  ),
 
                   const SizedBox(height: 6),
+
+                  // ── RECIPIENTS (per-task) ───
                   _sectionBox(
-                    'RECIPIENTS (Excel .xlsx / CSV / Paste)',
+                    'RECIPIENTS — Task ${task.id} (Excel .xlsx / CSV / Paste)',
                     AppColors.successGreen,
                     [
                       Row(
@@ -3695,9 +3754,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                       if (task.recipientList.isNotEmpty) ...[
                         const SizedBox(height: 4),
                         LinearProgressIndicator(
-                          value: _totalPending > 0
-                              ? 1 - (_totalPending / task.recipientList.length)
-                              : (_totalSent + _totalFailed > 0 ? 1.0 : 0.0),
+                          value: task.totalPending > 0
+                              ? 1 -
+                                    (task.totalPending /
+                                        task.recipientList.length)
+                              : (task.totalSent + task.totalFailed > 0
+                                    ? 1.0
+                                    : 0.0),
                           backgroundColor: AppColors.border,
                           valueColor: const AlwaysStoppedAnimation<Color>(
                             AppColors.successGreen,
@@ -3709,8 +3772,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
 
                   const SizedBox(height: 6),
+
+                  // ── ATTACHMENTS (per-task) ───
                   _sectionBox(
-                    'ATTACHMENTS (PDF, Image, HTML, Doc...)',
+                    'ATTACHMENTS — Task ${task.id}',
                     AppColors.secondaryPurple,
                     [
                       Row(
@@ -3718,7 +3783,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           Expanded(
                             child: Text(
                               task.attachmentNames.isNotEmpty
-                                  ? '📎 Selected: ${task.attachmentNames.length} files'
+                                  ? '📎 ${task.attachmentNames.length} files: ${task.attachmentNames.join(', ')}'
                                   : 'No attachment',
                               style: TextStyle(
                                 color: task.attachmentNames.isNotEmpty
@@ -3737,7 +3802,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                                 size: 14,
                               ),
                               onPressed: () => setState(() {
-                                task.attachmentPaths.clear(); // সব ক্লিয়ার হবে
+                                task.attachmentPaths.clear();
                                 task.attachmentNames.clear();
                               }),
                             ),
@@ -3769,6 +3834,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
 
                   const SizedBox(height: 6),
+
+                  // ── TIMING & HEADERS (per-task) ───
                   _sectionBox('TIMING & EMAIL HEADERS', AppColors.warning, [
                     Row(
                       children: [
@@ -3826,34 +3893,40 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ]),
 
                   const SizedBox(height: 6),
-                  _sectionBox('LOG SETTINGS', AppColors.secondaryPurple, [
-                    Row(
-                      children: [
+
+                  // ── LOG SETTINGS (per-task) ───
+                  _sectionBox(
+                    'LOG SETTINGS — Task ${task.id}',
+                    AppColors.secondaryPurple,
+                    [
+                      Row(
+                        children: [
+                          const Text(
+                            'Save logs to Firestore:',
+                            style: TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 10,
+                            ),
+                          ),
+                          const Spacer(),
+                          Switch(
+                            value: task.saveLogs,
+                            activeColor: AppColors.secondaryPurple,
+                            onChanged: (v) => setState(() => task.saveLogs = v),
+                          ),
+                        ],
+                      ),
+                      if (task.saveLogs)
                         const Text(
-                          'Save logs to Firestore:',
+                          'All send activities saved to Firebase',
                           style: TextStyle(
-                            color: AppColors.textMuted,
-                            fontSize: 10,
+                            color: AppColors.secondaryPurple,
+                            fontSize: 9,
+                            fontStyle: FontStyle.italic,
                           ),
                         ),
-                        const Spacer(),
-                        Switch(
-                          value: _saveLogs,
-                          activeColor: AppColors.secondaryPurple,
-                          onChanged: (v) => setState(() => _saveLogs = v),
-                        ),
-                      ],
-                    ),
-                    if (_saveLogs)
-                      const Text(
-                        'All send activities saved to Firebase',
-                        style: TextStyle(
-                          color: AppColors.secondaryPurple,
-                          fontSize: 9,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                  ]),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -3934,7 +4007,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       color: AppColors.background,
       child: Column(
         children: [
-          _panelHeader('EMAIL COMPOSER & TEMPLATE ENGINE'),
+          _panelHeader('EMAIL COMPOSER — Task ${task.id}'),
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(10),
@@ -4117,10 +4190,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                           ),
                         ),
                       ],
-                      if (_logs.isNotEmpty) ...[
+                      if (task.logs.isNotEmpty) ...[
                         const SizedBox(width: 4),
                         _composeBtn(
-                          '📊 Report (${_logs.length})',
+                          '📊 Report (${task.logs.length})',
                           AppColors.successGreen,
                           _showSendReport,
                         ),
@@ -4184,7 +4257,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                       child: Column(
                         children: [
-                          // Mini toolbar for HTML mode
                           if (task.descType == 'HTML Code')
                             Container(
                               padding: const EdgeInsets.symmetric(
@@ -4268,7 +4340,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ],
 
                   const SizedBox(height: 8),
-                  // Dynamic Tags
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
@@ -4351,29 +4422,29 @@ class _DashboardScreenState extends State<DashboardScreen>
                     children: [
                       Expanded(
                         child: _actionBtn2(
-                          _isSending
-                              ? 'SENDING... ($_totalSent/${_tasks[_activeTask].recipientList.length})'
+                          task.isSending
+                              ? 'SENDING... (${task.totalSent}/${task.recipientList.length})'
                               : 'SEND EMAILS',
-                          _isSending
+                          task.isSending
                               ? AppColors.textMuted
                               : AppColors.successGreen,
                           Colors.black,
-                          _isSending
+                          task.isSending
                               ? Icons.hourglass_top_rounded
                               : Icons.send_rounded,
-                          _isSending ? null : _startSending,
+                          task.isSending ? null : _startSending,
                         ),
                       ),
-                      if (_isSending) ...[
+                      if (task.isSending) ...[
                         const SizedBox(width: 6),
                         Expanded(
                           child: _actionBtn2(
-                            _isPaused ? '▶ RESUME' : '⏸ PAUSE',
-                            _isPaused
+                            task.isPaused ? '▶ RESUME' : '⏸ PAUSE',
+                            task.isPaused
                                 ? AppColors.successGreen
                                 : AppColors.warning,
                             Colors.black,
-                            _isPaused
+                            task.isPaused
                                 ? Icons.play_arrow_rounded
                                 : Icons.pause_rounded,
                             _pauseResumeSending,
@@ -4387,7 +4458,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           AppColors.dangerRed,
                           Colors.white,
                           Icons.stop_rounded,
-                          _isSending ? _stopSending : null,
+                          task.isSending ? _stopSending : null,
                         ),
                       ),
                       const SizedBox(width: 6),
@@ -4400,7 +4471,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           _clearAll,
                         ),
                       ),
-                      if (_logs.isNotEmpty) ...[
+                      if (task.logs.isNotEmpty) ...[
                         const SizedBox(width: 6),
                         Expanded(
                           child: _actionBtn2(
@@ -4531,7 +4602,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     onPressed: onTap,
   );
 
-  // ── RIGHT PANEL ──
+  // ── RIGHT PANEL — shows active task stats only ──
   Widget _buildRightPanel(_MailTask task) {
     return Container(
       decoration: const BoxDecoration(
@@ -4540,7 +4611,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       ),
       child: Column(
         children: [
-          _panelHeader('LIVE MONITORING'),
+          _panelHeader('LIVE MONITORING — Task ${task.id}'),
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(10),
@@ -4548,57 +4619,129 @@ class _DashboardScreenState extends State<DashboardScreen>
                 children: [
                   _statMini(
                     'Sent',
-                    '$_totalSent',
+                    '${task.totalSent}',
                     AppColors.successGreen,
                     Icons.check_circle_rounded,
                   ),
                   const SizedBox(height: 6),
                   _statMini(
                     'Failed',
-                    '$_totalFailed',
+                    '${task.totalFailed}',
                     AppColors.dangerRed,
                     Icons.error_rounded,
                   ),
                   const SizedBox(height: 6),
                   _statMini(
                     'Pending',
-                    '$_totalPending',
+                    '${task.totalPending}',
                     AppColors.warning,
                     Icons.pending_rounded,
                   ),
                   const SizedBox(height: 6),
-                  if (_maxSendPerSmtp > 0)
+                  if (task.maxSendPerSmtp > 0)
                     _statMini(
                       'SMTP Used',
-                      '$_sentFromCurrentSmtp / $_maxSendPerSmtp',
+                      '${task.sentFromCurrentSmtp} / ${task.maxSendPerSmtp}',
                       AppColors.secondaryPurple,
                       Icons.router_rounded,
                     ),
-                  if (_totalSent + _totalFailed > 0) ...[
+                  if (task.totalSent + task.totalFailed > 0) ...[
                     const SizedBox(height: 6),
                     _statMini(
                       'Success Rate',
-                      '${((_totalSent / (_totalSent + _totalFailed)) * 100).toStringAsFixed(1)}%',
+                      '${((task.totalSent / (task.totalSent + task.totalFailed)) * 100).toStringAsFixed(1)}%',
                       AppColors.primaryCyan,
                       Icons.trending_up_rounded,
                     ),
                   ],
-                  const SizedBox(height: 10),
 
-                  if (_isSending)
+                  // ── All tasks overview ──
+                  if (_tasks.length > 1) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primaryCyan.withOpacity(0.05),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: AppColors.primaryCyan.withOpacity(0.2),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'ALL TASKS OVERVIEW',
+                            style: TextStyle(
+                              color: AppColors.primaryCyan,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          ..._tasks.map(
+                            (t) => Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: t.isSending
+                                          ? (t.isPaused
+                                                ? AppColors.warning
+                                                : AppColors.successGreen)
+                                          : AppColors.textMuted,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Task ${t.id}',
+                                    style: TextStyle(
+                                      color: t.id == task.id
+                                          ? AppColors.primaryCyan
+                                          : AppColors.textMuted,
+                                      fontSize: 9,
+                                      fontWeight: t.id == task.id
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    '${t.totalSent}✓ ${t.totalFailed}✗ ${t.recipientList.length}📧',
+                                    style: const TextStyle(
+                                      color: AppColors.textMuted,
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 10),
+                  if (task.isSending)
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 300),
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
                         color:
-                            (_isPaused
+                            (task.isPaused
                                     ? AppColors.warning
                                     : AppColors.successGreen)
                                 .withOpacity(0.08),
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(
                           color:
-                              (_isPaused
+                              (task.isPaused
                                       ? AppColors.warning
                                       : AppColors.successGreen)
                                   .withOpacity(0.3),
@@ -4609,7 +4752,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                         children: [
                           Row(
                             children: [
-                              if (!_isPaused)
+                              if (!task.isPaused)
                                 const SizedBox(
                                   width: 12,
                                   height: 12,
@@ -4626,9 +4769,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                                 ),
                               const SizedBox(width: 6),
                               Text(
-                                _isPaused ? 'PAUSED' : 'SENDING...',
+                                task.isPaused ? 'PAUSED' : 'SENDING...',
                                 style: TextStyle(
-                                  color: _isPaused
+                                  color: task.isPaused
                                       ? AppColors.warning
                                       : AppColors.successGreen,
                                   fontSize: 9,
@@ -4637,7 +4780,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                               ),
                             ],
                           ),
-                          if (_ipRotationEnabled && !_isPaused) ...[
+                          if (_ipRotationEnabled && !task.isPaused) ...[
                             const SizedBox(height: 6),
                             Text(
                               'IP: $_currentIp',
@@ -4688,8 +4831,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                         _pkgRow('mailer', '^6.1.0', true),
                         _pkgRow('excel', '^4.0.6', true),
                         _pkgRow('file_picker', '^8.1.2', true),
-                        _pkgRow('firebase_auth', '^4.x', true),
-                        _pkgRow('cloud_firestore', '4.x', true),
+                        _pkgRow('googleapis', '^latest', true),
+                        _pkgRow('googleapis_auth', '^latest', true),
                         const SizedBox(height: 8),
                         Container(
                           padding: const EdgeInsets.all(6),
@@ -4698,7 +4841,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: const Text(
-                            'pubspec.yaml:\nmailer: ^6.1.0\nexcel: ^4.0.6\nfile_picker: ^8.1.2',
+                            'pubspec.yaml:\nmailer: ^6.1.0\nexcel: ^4.0.6\nfile_picker: ^8.1.2\ngoogleapis: any\ngoogleapis_auth: any',
                             style: TextStyle(
                               color: AppColors.successGreen,
                               fontSize: 9,
@@ -4747,8 +4890,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     ),
   );
 
-  // ── LOG TABLE ──
-  Widget _buildLogTable() {
+  // ── LOG TABLE — shows ACTIVE task logs only ──
+  Widget _buildLogTable(_MailTask task) {
     return Container(
       height: 140,
       decoration: const BoxDecoration(
@@ -4760,24 +4903,78 @@ class _DashboardScreenState extends State<DashboardScreen>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
             color: AppColors.background,
-            child: const Row(
+            child: Row(
               children: [
-                Expanded(flex: 1, child: _HeaderTxt('S.NO')),
-                Expanded(flex: 2, child: _HeaderTxt('SENDER')),
-                Expanded(flex: 2, child: _HeaderTxt('SUBJECT')),
-                Expanded(flex: 3, child: _HeaderTxt('SENT TO')),
-                Expanded(flex: 2, child: _HeaderTxt('IP USED')),
-                Expanded(flex: 1, child: _HeaderTxt('STATUS')),
-                Expanded(flex: 2, child: _HeaderTxt('TIME')),
+                Expanded(
+                  child: Row(
+                    children: [
+                      const Text(
+                        'SEND LOG',
+                        style: TextStyle(
+                          color: AppColors.textMuted,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      // Task selector for log view
+                      ..._tasks.asMap().entries.map((e) {
+                        final i = e.key;
+                        final t = e.value;
+                        final active = i == _activeTask;
+                        return GestureDetector(
+                          onTap: () => setState(() => _activeTask = i),
+                          child: Container(
+                            margin: const EdgeInsets.only(right: 4),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: active
+                                  ? AppColors.primaryCyan.withOpacity(0.15)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: active
+                                    ? AppColors.primaryCyan
+                                    : AppColors.border.withOpacity(0.5),
+                              ),
+                            ),
+                            child: Text(
+                              'T${t.id} (${t.logs.length})',
+                              style: TextStyle(
+                                color: active
+                                    ? AppColors.primaryCyan
+                                    : AppColors.textMuted,
+                                fontSize: 8,
+                                fontWeight: active
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+                const Expanded(flex: 2, child: _HeaderTxt('SENDER')),
+                const Expanded(flex: 2, child: _HeaderTxt('SUBJECT')),
+                const Expanded(flex: 3, child: _HeaderTxt('SENT TO')),
+                const Expanded(flex: 2, child: _HeaderTxt('IP USED')),
+                const Expanded(flex: 1, child: _HeaderTxt('STATUS')),
+                const Expanded(flex: 2, child: _HeaderTxt('TIME')),
               ],
             ),
           ),
           Expanded(
-            child: _logs.isEmpty
-                ? const Center(
+            child: task.logs.isEmpty
+                ? Center(
                     child: Text(
-                      'Awaiting task execution...',
-                      style: TextStyle(
+                      'Awaiting Task ${task.id} execution...',
+                      style: const TextStyle(
                         color: AppColors.textMuted,
                         fontSize: 10,
                         fontStyle: FontStyle.italic,
@@ -4785,9 +4982,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ),
                   )
                 : ListView.builder(
-                    itemCount: _logs.length,
+                    itemCount: task.logs.length,
                     itemBuilder: (_, i) {
-                      final log = _logs[i];
+                      final log = task.logs[i];
                       return Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 16,
@@ -5176,7 +5373,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 }
 
 // ================================================================
-//  DATA MODELS
+//  DATA MODELS — _MailTask now holds its OWN stats/logs/state
 // ================================================================
 class _MailTask {
   final int id;
@@ -5185,6 +5382,7 @@ class _MailTask {
   String bodyFormat = 'Single Text';
   double mailDelay = 3.0;
 
+  // ── Per-task pools ──
   bool spoofMultiple = false;
   bool subjectMultiple = false;
   bool bodyMultiple = false;
@@ -5192,6 +5390,7 @@ class _MailTask {
   List<String> subjectsList = [];
   List<String> bodyList = [];
 
+  // ── Per-task settings ──
   bool macSpoofEnabled = false;
   bool domainMixEnabled = false;
   bool pcProtectionBypass = false;
@@ -5201,12 +5400,27 @@ class _MailTask {
   String macAddress = 'AA:BB:CC:DD:EE:FF';
   List<String> mixedDomains = [];
   String spamScore = '—';
+  bool saveLogs = false;
+  int maxSendPerSmtp = 0; // 0 = unlimited
 
-  List<String> attachmentPaths = []; // একাধিক ফাইলের পাথ রাখার জন্য
-  List<String> attachmentNames = []; // একাধিক ফাইলের নাম রাখার জন্য
+  // ── Per-task attachments ──
+  List<String> attachmentPaths = [];
+  List<String> attachmentNames = [];
 
+  // ── Per-task recipients ──
   List<String> recipientList = [];
   List<Map<String, dynamic>> recipientData = [];
+
+  // ── PER-TASK ISOLATED STATS ──
+  int totalSent = 0;
+  int totalFailed = 0;
+  int totalPending = 0;
+  bool isSending = false;
+  bool isPaused = false;
+  int sentFromCurrentSmtp = 0;
+
+  // ── PER-TASK ISOLATED LOGS ──
+  final List<_LogEntry> logs = [];
 
   Map<String, bool> headers = {
     'MGR': false,
