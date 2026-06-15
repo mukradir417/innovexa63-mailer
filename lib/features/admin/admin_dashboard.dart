@@ -562,9 +562,10 @@ class _DashboardPage extends StatelessWidget {
                           : status == 'banned'
                           ? AppColors.dangerRed
                           : AppColors.warning;
+                      final dispId = (d['customUserId'] ?? doc.id).toString();
                       return _tableRow(
                         [
-                          doc.id,
+                          dispId,
                           (d['role'] ?? 'user').toString().toUpperCase(),
                           d['plan'] ?? 'Free',
                           status.toUpperCase(),
@@ -934,27 +935,50 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                                   }
                                   setS(() => isCreating = true);
                                   try {
-                                    final uid = _newUserIdCtrl.text
+                                    // customUserId = admin-given label (e.g. client_02)
+                                    final customUserId = _newUserIdCtrl.text
                                         .trim()
                                         .toLowerCase();
                                     final password = _newUserPassCtrl.text
                                         .trim();
-                                    final emailForAuth = '$uid@innovexa.com';
+                                    final emailForAuth =
+                                        '$customUserId@innovexa.com';
+
+                                    // ── Create Firebase Auth user in a
+                                    //    secondary app so we don't log out
+                                    //    the current admin session ──
                                     FirebaseApp
                                     tempApp = await Firebase.initializeApp(
                                       name:
                                           'temp_${DateTime.now().millisecondsSinceEpoch}',
                                       options: Firebase.app().options,
                                     );
+
+                                    // Capture the real Firebase Auth UID
+                                    String authUid = '';
                                     try {
-                                      await FirebaseAuth.instanceFor(
-                                        app: tempApp,
-                                      ).createUserWithEmailAndPassword(
-                                        email: emailForAuth,
-                                        password: password,
+                                      final cred =
+                                          await FirebaseAuth.instanceFor(
+                                            app: tempApp,
+                                          ).createUserWithEmailAndPassword(
+                                            email: emailForAuth,
+                                            password: password,
+                                          );
+                                      authUid = cred.user?.uid ?? '';
+
+                                      // Also set displayName so login_screen
+                                      // can resolve the custom label later
+                                      await cred.user?.updateDisplayName(
+                                        customUserId,
                                       );
                                     } finally {
                                       await tempApp.delete();
+                                    }
+
+                                    if (authUid.isEmpty) {
+                                      throw Exception(
+                                        'Firebase Auth UID not returned.',
+                                      );
                                     }
 
                                     List<String> activePerms = [];
@@ -974,10 +998,13 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                                       );
                                     }
 
+                                    // ── KEY FIX: Firestore doc ID = Auth UID ──
+                                    // customUserId stored as a searchable field
                                     await FirebaseFirestore.instance
                                         .collection('users')
-                                        .doc(uid)
+                                        .doc(authUid)
                                         .set({
+                                          'customUserId': customUserId,
                                           'fullName': _newNameCtrl.text.trim(),
                                           'role': _selectedRole,
                                           'status': 'active',
@@ -1000,11 +1027,12 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                                         });
 
                                     await _writeLog(
-                                      action: 'User created: $uid',
+                                      action:
+                                          'User created: $customUserId (uid: $authUid)',
                                       type: 'user_management',
-                                      targetUser: uid,
+                                      targetUser: authUid,
                                       details:
-                                          'Role: $_selectedRole, Plan: $_selectedPlan',
+                                          'CustomID: $customUserId, Role: $_selectedRole, Plan: $_selectedPlan',
                                     );
 
                                     if (ctx.mounted) {
@@ -1903,11 +1931,17 @@ class _UserManagementPageState extends State<_UserManagementPage> {
 
               var docs = snap.data!.docs.where((doc) {
                 final d = doc.data() as Map<String, dynamic>;
-                final uid = doc.id.toLowerCase(),
-                    status = (d['status'] ?? '').toString().toLowerCase(),
-                    role = (d['role'] ?? '').toString().toLowerCase(),
-                    search = _searchCtrl.text.toLowerCase();
-                if (search.isNotEmpty && !uid.contains(search)) return false;
+                // Search by customUserId label OR auth uid
+                final customId = (d['customUserId'] ?? doc.id)
+                    .toString()
+                    .toLowerCase();
+                final status = (d['status'] ?? '').toString().toLowerCase();
+                final role = (d['role'] ?? '').toString().toLowerCase();
+                final search = _searchCtrl.text.toLowerCase();
+                if (search.isNotEmpty &&
+                    !customId.contains(search) &&
+                    !doc.id.toLowerCase().contains(search))
+                  return false;
                 if (_filterStatus != 'all' && status != _filterStatus)
                   return false;
                 if (_filterRole != 'all' && role != _filterRole) return false;
@@ -1943,8 +1977,11 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                       ),
                     ),
                     ...docs.map((doc) {
-                      final uid = doc.id;
+                      final uid =
+                          doc.id; // Firebase Auth UID (Firestore doc ID)
                       final d = doc.data() as Map<String, dynamic>;
+                      // Display label shown to admin
+                      final displayId = (d['customUserId'] ?? uid).toString();
                       final status = (d['status'] ?? 'active')
                           .toString()
                           .toLowerCase();
@@ -2016,7 +2053,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                                   const SizedBox(width: 10),
                                   Flexible(
                                     child: Text(
-                                      uid,
+                                      displayId,
                                       style: const TextStyle(
                                         color: AppColors.textMain,
                                         fontSize: 12,
@@ -4584,7 +4621,7 @@ class _BillingPage extends StatelessWidget {
                                 Expanded(
                                   flex: 3,
                                   child: Text(
-                                    doc.id,
+                                    (d['customUserId'] ?? doc.id).toString(),
                                     style: const TextStyle(
                                       color: AppColors.primaryCyan,
                                       fontSize: 12,
@@ -5836,7 +5873,7 @@ class _RoleManagementPage extends StatelessWidget {
                             Expanded(
                               flex: 3,
                               child: Text(
-                                doc.id,
+                                (d['customUserId'] ?? doc.id).toString(),
                                 style: const TextStyle(
                                   color: AppColors.textMain,
                                   fontSize: 12,

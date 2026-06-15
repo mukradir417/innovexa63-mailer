@@ -56,7 +56,7 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   // ================================================================
-  //  CORE LOGIN LOGIC
+  //  CORE LOGIN LOGIC (UPGRADED WITH THREAD SAFETY FOR WINDOWS)
   // ================================================================
   Future<void> _login() async {
     final userId = _userIdCtrl.text.trim().toLowerCase();
@@ -177,20 +177,24 @@ class _LoginScreenState extends State<LoginScreen>
 
       if (!mounted) return;
 
-      // ── Step 9: Navigate by role ──
+      // ── Step 9: Navigate by role (Forced on Main Thread for Safety) ──
       final Widget destination = isAdmin
           ? const AdminDashboard()
           : const DashboardScreen();
 
-      await Navigator.of(context).pushAndRemoveUntil(
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => destination,
-          transitionsBuilder: (_, anim, __, child) =>
-              FadeTransition(opacity: anim, child: child),
-          transitionDuration: const Duration(milliseconds: 300),
-        ),
-        (route) => false,
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          Navigator.of(context).pushAndRemoveUntil(
+            PageRouteBuilder(
+              pageBuilder: (_, __, ___) => destination,
+              transitionsBuilder: (_, anim, __, child) =>
+                  FadeTransition(opacity: anim, child: child),
+              transitionDuration: const Duration(milliseconds: 300),
+            ),
+            (route) => false,
+          );
+        }
+      });
     } on FirebaseAuthException catch (e) {
       if (e.code == 'user-not-found' ||
           e.code == 'wrong-password' ||
@@ -202,12 +206,18 @@ class _LoginScreenState extends State<LoginScreen>
     } catch (e) {
       _setError('Error: $e');
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      // Ensuring UI state stops loading securely on the main thread
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _isLoading = false);
+      });
     }
   }
 
+  // Helper method upgraded to execute strictly on the Main UI thread
   void _setError(String msg) {
-    if (mounted) setState(() => _errorMessage = msg);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _errorMessage = msg);
+    });
   }
 
   // ================================================================
