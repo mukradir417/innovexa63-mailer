@@ -11,7 +11,7 @@ import '../../core/app_colors.dart';
 // ================================================================
 
 class AdminDashboard extends StatefulWidget {
-  const AdminDashboard({Key? key}) : super(key: key);
+  const AdminDashboard({super.key});
   @override
   State<AdminDashboard> createState() => _AdminDashboardState();
 }
@@ -541,12 +541,13 @@ class _DashboardPage extends StatelessWidget {
                 .limit(5)
                 .snapshots(),
             builder: (context, snap) {
-              if (!snap.hasData)
+              if (!snap.hasData) {
                 return const Center(
                   child: CircularProgressIndicator(
                     color: AppColors.primaryCyan,
                   ),
                 );
+              }
               final docs = snap.data!.docs;
               return _GlassContainer(
                 child: Column(
@@ -615,7 +616,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
   String _selectedRole = 'user';
   String _selectedPlan = 'Premium';
 
-  Map<String, bool> _subAdminPerms = {
+  final Map<String, bool> _subAdminPerms = {
     'Manage Users': false,
     'Manage Billing': false,
     'Manage Settings': false,
@@ -824,7 +825,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                               ),
                               const SizedBox(height: 6),
                               DropdownButtonFormField<String>(
-                                value: _selectedPlan,
+                                initialValue: _selectedPlan,
                                 dropdownColor: AppColors.sidebar,
                                 style: const TextStyle(
                                   color: Colors.white,
@@ -982,10 +983,11 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                                     }
 
                                     List<String> activePerms = [];
-                                    if (_selectedRole == 'sub_admin')
+                                    if (_selectedRole == 'sub_admin') {
                                       _subAdminPerms.forEach((k, v) {
                                         if (v) activePerms.add(k);
                                       });
+                                    }
 
                                     DateTime? finalDT;
                                     if (selDate != null && selTime != null) {
@@ -1273,7 +1275,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                 ),
                 const SizedBox(height: 6),
                 DropdownButtonFormField<String>(
-                  value: plan,
+                  initialValue: plan,
                   dropdownColor: AppColors.sidebar,
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                   decoration: _dropdownDecor(),
@@ -1303,7 +1305,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                 ),
                 const SizedBox(height: 6),
                 DropdownButtonFormField<String>(
-                  value: status,
+                  initialValue: status,
                   dropdownColor: AppColors.sidebar,
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                   decoration: _dropdownDecor(),
@@ -1558,8 +1560,9 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                             foregroundColor: Colors.black,
                           ),
                           onPressed: () async {
-                            if (selectedDate == null || selectedTime == null)
+                            if (selectedDate == null || selectedTime == null) {
                               return;
+                            }
                             final finalDT = DateTime(
                               selectedDate!.year,
                               selectedDate!.month,
@@ -1910,13 +1913,14 @@ class _UserManagementPageState extends State<_UserManagementPage> {
           StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance.collection('users').snapshots(),
             builder: (context, snap) {
-              if (snap.connectionState == ConnectionState.waiting)
+              if (snap.connectionState == ConnectionState.waiting) {
                 return const Center(
                   child: CircularProgressIndicator(
                     color: AppColors.primaryCyan,
                   ),
                 );
-              if (!snap.hasData || snap.data!.docs.isEmpty)
+              }
+              if (!snap.hasData || snap.data!.docs.isEmpty) {
                 return _GlassContainer(
                   child: const Padding(
                     padding: EdgeInsets.all(40),
@@ -1928,6 +1932,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                     ),
                   ),
                 );
+              }
 
               var docs = snap.data!.docs.where((doc) {
                 final d = doc.data() as Map<String, dynamic>;
@@ -1940,10 +1945,12 @@ class _UserManagementPageState extends State<_UserManagementPage> {
                 final search = _searchCtrl.text.toLowerCase();
                 if (search.isNotEmpty &&
                     !customId.contains(search) &&
-                    !doc.id.toLowerCase().contains(search))
+                    !doc.id.toLowerCase().contains(search)) {
                   return false;
-                if (_filterStatus != 'all' && status != _filterStatus)
+                }
+                if (_filterStatus != 'all' && status != _filterStatus) {
                   return false;
+                }
                 if (_filterRole != 'all' && role != _filterRole) return false;
                 return true;
               }).toList();
@@ -2249,7 +2256,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
 //  LICENSE MANAGER PAGE
 // ================================================================
 class _LicenseManagerPage extends StatefulWidget {
-  const _LicenseManagerPage({Key? key}) : super(key: key);
+  const _LicenseManagerPage({super.key});
   @override
   State<_LicenseManagerPage> createState() => _LicenseManagerPageState();
 }
@@ -2261,7 +2268,7 @@ class _LicenseManagerPageState extends State<_LicenseManagerPage> {
   String _generateKey() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     final rand = Random.secure();
-    final seg = () =>
+    String seg() =>
         List.generate(5, (_) => chars[rand.nextInt(chars.length)]).join();
     return '${seg()}-${seg()}-${seg()}-${seg()}';
   }
@@ -2682,12 +2689,13 @@ class _LicenseManagerPageState extends State<_LicenseManagerPage> {
           StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance.collection('users').snapshots(),
             builder: (context, snap) {
-              if (!snap.hasData)
+              if (!snap.hasData) {
                 return const Center(
                   child: CircularProgressIndicator(
                     color: AppColors.primaryCyan,
                   ),
                 );
+              }
               var docs = snap.data!.docs.where((doc) {
                 final d = doc.data() as Map<String, dynamic>;
                 final uid = doc.id.toLowerCase();
@@ -2695,10 +2703,12 @@ class _LicenseManagerPageState extends State<_LicenseManagerPage> {
                     .toString()
                     .toLowerCase();
                 if (_searchCtrl.text.isNotEmpty &&
-                    !uid.contains(_searchCtrl.text.toLowerCase()))
+                    !uid.contains(_searchCtrl.text.toLowerCase())) {
                   return false;
-                if (_filterPayment != 'all' && ps != _filterPayment)
+                }
+                if (_filterPayment != 'all' && ps != _filterPayment) {
                   return false;
+                }
                 return true;
               }).toList();
 
@@ -3149,13 +3159,14 @@ class _CampaignManagerPageState extends State<_CampaignManagerPage> {
                 .orderBy('createdAt', descending: true)
                 .snapshots(),
             builder: (context, snap) {
-              if (!snap.hasData)
+              if (!snap.hasData) {
                 return const Center(
                   child: CircularProgressIndicator(
                     color: AppColors.primaryCyan,
                   ),
                 );
-              if (snap.data!.docs.isEmpty)
+              }
+              if (snap.data!.docs.isEmpty) {
                 return _GlassContainer(
                   child: const Padding(
                     padding: EdgeInsets.all(40),
@@ -3167,6 +3178,7 @@ class _CampaignManagerPageState extends State<_CampaignManagerPage> {
                     ),
                   ),
                 );
+              }
 
               return _GlassContainer(
                 child: Column(
@@ -3479,7 +3491,7 @@ class _SmtpManagerPageState extends State<_SmtpManagerPage> {
                             dense: true,
                             contentPadding: EdgeInsets.zero,
                             value: ssl,
-                            activeColor: AppColors.successGreen,
+                            activeThumbColor: AppColors.successGreen,
                             onChanged: (v) => setS(() => ssl = v),
                             title: Text(
                               ssl ? 'SSL ON' : 'SSL OFF',
@@ -3517,8 +3529,9 @@ class _SmtpManagerPageState extends State<_SmtpManagerPage> {
                         ),
                       ),
                       onPressed: () async {
-                        if (hostCtrl.text.isEmpty || userCtrl.text.isEmpty)
+                        if (hostCtrl.text.isEmpty || userCtrl.text.isEmpty) {
                           return;
+                        }
                         await FirebaseFirestore.instance
                             .collection('smtps')
                             .add({
@@ -3599,13 +3612,14 @@ class _SmtpManagerPageState extends State<_SmtpManagerPage> {
           StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance.collection('smtps').snapshots(),
             builder: (context, snap) {
-              if (!snap.hasData)
+              if (!snap.hasData) {
                 return const Center(
                   child: CircularProgressIndicator(
                     color: AppColors.primaryCyan,
                   ),
                 );
-              if (snap.data!.docs.isEmpty)
+              }
+              if (snap.data!.docs.isEmpty) {
                 return _GlassContainer(
                   child: const Padding(
                     padding: EdgeInsets.all(40),
@@ -3617,6 +3631,7 @@ class _SmtpManagerPageState extends State<_SmtpManagerPage> {
                     ),
                   ),
                 );
+              }
               return _GlassContainer(
                 child: Column(
                   children: [
@@ -4025,13 +4040,14 @@ class _ProxyManagerPageState extends State<_ProxyManagerPage> {
                 .collection('proxies')
                 .snapshots(),
             builder: (context, snap) {
-              if (!snap.hasData)
+              if (!snap.hasData) {
                 return const Center(
                   child: CircularProgressIndicator(
                     color: AppColors.primaryCyan,
                   ),
                 );
-              if (snap.data!.docs.isEmpty)
+              }
+              if (snap.data!.docs.isEmpty) {
                 return _GlassContainer(
                   child: const Padding(
                     padding: EdgeInsets.all(40),
@@ -4043,6 +4059,7 @@ class _ProxyManagerPageState extends State<_ProxyManagerPage> {
                     ),
                   ),
                 );
+              }
               return _GlassContainer(
                 child: Column(
                   children: [
@@ -4748,8 +4765,9 @@ class _AnalyticsPage extends StatelessWidget {
                   if (d['expiryDate'] != null &&
                       (d['expiryDate'] as Timestamp).toDate().isBefore(
                         DateTime.now(),
-                      ))
+                      )) {
                     expired++;
+                  }
                   final ps = (d['paymentStatus'] ?? 'unpaid')
                       .toString()
                       .toLowerCase();
@@ -4760,8 +4778,9 @@ class _AnalyticsPage extends StatelessWidget {
                           d['paymentAmount']?.toString() ?? '0',
                         ) ??
                         0;
-                  } else
+                  } else {
                     unpaid++;
+                  }
                 }
               }
 
@@ -5325,19 +5344,21 @@ class _ActivityLogsPageState extends State<_ActivityLogsPage> {
                       .limit(50)
                       .snapshots(),
                   builder: (context, snap) {
-                    if (!snap.hasData)
+                    if (!snap.hasData) {
                       return const Center(
                         child: CircularProgressIndicator(
                           color: AppColors.primaryCyan,
                         ),
                       );
-                    if (snap.data!.docs.isEmpty)
+                    }
+                    if (snap.data!.docs.isEmpty) {
                       return const Center(
                         child: Text(
                           'No activity logs found.',
                           style: TextStyle(color: AppColors.textMuted),
                         ),
                       );
+                    }
 
                     return ListView(
                       children: snap.data!.docs.map((doc) {
@@ -5550,14 +5571,15 @@ class _ActivityLogsPageState extends State<_ActivityLogsPage> {
                 .limit(100)
                 .snapshots(),
             builder: (context, snap) {
-              if (snap.connectionState == ConnectionState.waiting)
+              if (snap.connectionState == ConnectionState.waiting) {
                 return const Center(
                   child: CircularProgressIndicator(
                     color: AppColors.primaryCyan,
                   ),
                 );
+              }
 
-              if (!snap.hasData || snap.data!.docs.isEmpty)
+              if (!snap.hasData || snap.data!.docs.isEmpty) {
                 return _GlassContainer(
                   child: const Padding(
                     padding: EdgeInsets.all(40),
@@ -5583,6 +5605,7 @@ class _ActivityLogsPageState extends State<_ActivityLogsPage> {
                     ),
                   ),
                 );
+              }
 
               // Filter
               final docs = snap.data!.docs.where((doc) {
@@ -5591,8 +5614,9 @@ class _ActivityLogsPageState extends State<_ActivityLogsPage> {
                 final user = (d['targetUser'] ?? '').toString().toLowerCase();
                 if (_filterType != 'all' && type != _filterType) return false;
                 if (_searchUser.isNotEmpty &&
-                    !user.contains(_searchUser.toLowerCase()))
+                    !user.contains(_searchUser.toLowerCase())) {
                   return false;
+                }
                 return true;
               }).toList();
 
@@ -6044,9 +6068,9 @@ class _RoleBadge extends StatelessWidget {
     final isAdmin = role.toLowerCase() == 'admin';
     final isSub = role.toLowerCase() == 'sub_admin';
     Color color = AppColors.secondaryPurple;
-    if (isSuper)
+    if (isSuper) {
       color = Colors.amberAccent;
-    else if (isAdmin)
+    } else if (isAdmin)
       color = AppColors.dangerRed;
     else if (isSub)
       color = AppColors.warning;

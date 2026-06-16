@@ -13,6 +13,8 @@ import '../../core/app_colors.dart';
 import 'package:excel/excel.dart' hide Border, TextSpan;
 import 'package:googleapis/gmail/v1.dart' as gmail;
 import 'package:googleapis_auth/auth_io.dart' as auth;
+import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
 
 // ================================================================
 //  DASHBOARD SCREEN - INNOVEXA63 MAILER ULTRA 8.0
@@ -24,13 +26,15 @@ import 'package:googleapis_auth/auth_io.dart' as auth;
 // ================================================================
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({Key? key}) : super(key: key);
+  const DashboardScreen({super.key});
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen>
     with TickerProviderStateMixin {
+  String proxyStatus = 'Disconnected'; // Initial status 'Disconnected' thakbe
+  String proxyLocation = ''; // Proxy-r desh ebong shohor-er naam ekhane thakbe
   StreamSubscription<DocumentSnapshot>? _userStatusSub;
 
   // ── Tasks ── Each task is fully independent
@@ -38,7 +42,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   int _activeTask = 0;
 
   // ── IP & Proxy Rotation (global) ──
-  List<String> _ipList = [];
+  final List<String> _ipList = [];
   bool _ipRotationEnabled = false;
   bool _randomIpRotation = true;
   int _ipRotateEvery = 5;
@@ -50,6 +54,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   String _proxyPort = '';
   String _proxyUser = '';
   String _proxyPass = '';
+  String _proxyType = 'HTTP';
 
   // ── SMTP Test (per-task result shown in UI) ──
   String _smtpTestResult = '';
@@ -85,8 +90,110 @@ class _DashboardScreenState extends State<DashboardScreen>
     _userStatusSub?.cancel();
     _countdownTimer?.cancel();
     _ipInputCtrl.dispose();
-    for (final t in _tasks) t.dispose();
+    for (final t in _tasks) {
+      t.dispose();
+    }
     super.dispose();
+  }
+
+  // ================================================================
+  //  LIVE PROXY TESTER & GEOLOCATION FETCH (HTTP & SOCKS5 SUPPORT)
+  // ================================================================
+  Future<void> _checkLiveProxy(
+    String type,
+    String host,
+    String port,
+    String user,
+    String pass,
+  ) async {
+    if (host.isEmpty || port.isEmpty) {
+      _showSnack(
+        context,
+        'Please enter Proxy Host and Port first!',
+        AppColors.dangerRed,
+      );
+      return;
+    }
+
+    setState(() {
+      proxyStatus =
+          'Testing...'; // Button-e click korle prothome 'Testing...' dekhabe
+      proxyLocation = '';
+    });
+
+    try {
+      HttpClient client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 15);
+
+      // ইউজার SOCKS5 সিলেক্ট করেছে কিনা চেক করা হচ্ছে
+      bool isSocks = type == 'SOCKS5';
+
+      // Dart strictly expects 'PROXY' keyword. 'SOCKS' crashes the app.
+      client.findProxy = (uri) {
+        return "PROXY $host:$port";
+      };
+
+      HttpClientRequest request = await client.getUrl(
+        Uri.parse('http://ip-api.com/json'),
+      );
+
+      // HTTP Proxy হলে ইউজারনেম/পাসওয়ার্ড হেডারে বসাতে হবে
+      if (!isSocks && user.isNotEmpty && pass.isNotEmpty) {
+        String authStr = base64Encode(utf8.encode('$user:$pass'));
+        request.headers.set('Proxy-Authorization', 'Basic $authStr');
+      }
+
+      HttpClientResponse response = await request.close();
+
+      if (response.statusCode == 200) {
+        String reply = await response.transform(utf8.decoder).join();
+        Map<String, dynamic> data = jsonDecode(reply);
+
+        if (data['status'] == 'success') {
+          // Connection thik thakle status 'Connected' hobe ebong country/city dekhabe
+          setState(() {
+            proxyStatus = 'Connected';
+            proxyLocation =
+                '📍 ${data['city']}, ${data['country']} (${data['query']})';
+          });
+          _showSnack(
+            context,
+            '✓ $type Proxy Connected Successfully!',
+            AppColors.successGreen,
+          );
+        } else {
+          setState(() {
+            proxyStatus = 'Failed';
+            proxyLocation = 'Proxy response error';
+          });
+        }
+      } else {
+        setState(() {
+          proxyStatus = 'Failed';
+          proxyLocation = 'Server Error: ${response.statusCode}';
+        });
+      }
+    } catch (e) {
+      debugPrint('Proxy connection failed: $e');
+      setState(() {
+        proxyStatus = 'Failed'; // Proxy kaj na korle status 'Failed' dekhabe
+        proxyLocation = 'Dead Proxy / Protocol Error';
+      });
+      _showSnack(context, '❌ Proxy Connection Failed!', AppColors.dangerRed);
+    }
+  }
+
+  void _showSnack(BuildContext ctx, String msg, Color color) {
+    if (!ctx.mounted) return;
+    ScaffoldMessenger.of(ctx).showSnackBar(
+      SnackBar(
+        content: Text(msg, style: const TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: color,
+        duration: const Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
   }
 
   // ================================================================
@@ -175,13 +282,16 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   String _formatCountdown(Duration d) {
-    if (d == Duration.zero && _userData['expiryDate'] == null)
+    if (d == Duration.zero && _userData['expiryDate'] == null) {
       return 'Lifetime';
+    }
     if (d == Duration.zero) return 'EXPIRED';
-    if (d.inDays > 0)
+    if (d.inDays > 0) {
       return '${d.inDays}d ${d.inHours % 24}h ${d.inMinutes % 60}m';
-    if (d.inHours > 0)
+    }
+    if (d.inHours > 0) {
       return '${d.inHours}h ${d.inMinutes % 60}m ${d.inSeconds % 60}s';
+    }
     return '${d.inMinutes}m ${d.inSeconds % 60}s';
   }
 
@@ -215,7 +325,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  REAL GOOGLE API AUTHENTICATION
+  //  GOOGLE API AUTHENTICATION (Direct Service Account)
   // ================================================================
   void _authenticateGoogle(_MailTask task) async {
     if (task.googleJsonPath.isEmpty) {
@@ -226,13 +336,17 @@ class _DashboardScreenState extends State<DashboardScreen>
       );
       return;
     }
+
     _showSnack(context, 'Authenticating with Google API...', AppColors.warning);
     try {
       final jsonString = await File(task.googleJsonPath).readAsString();
       final credentials = auth.ServiceAccountCredentials.fromJson(jsonString);
+
+      // ডিরেক্ট অথেনটিকেশন (Impersonation ছাড়া)
       final client = await auth.clientViaServiceAccount(credentials, [
         gmail.GmailApi.mailGoogleComScope,
       ]);
+
       setState(() => task.googleApiToken = 'REAL-AUTH-SUCCESS');
       client.close();
       _showSnack(
@@ -244,23 +358,10 @@ class _DashboardScreenState extends State<DashboardScreen>
       setState(() => task.googleApiToken = '');
       _showSnack(
         context,
-        'Auth Failed: Ensure valid JSON file!',
+        'Auth Failed: Invalid or Expired JSON file!',
         AppColors.dangerRed,
       );
     }
-  }
-
-  void _showSnack(BuildContext ctx, String msg, Color color) {
-    if (!ctx.mounted) return;
-    ScaffoldMessenger.of(ctx).showSnackBar(
-      SnackBar(
-        content: Text(msg, style: const TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: color,
-        duration: const Duration(seconds: 3),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-    );
   }
 
   // ================================================================
@@ -271,9 +372,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     final hasExpiry = _userData['expiryDate'] != null;
     final isExpired = hasExpiry && _timeRemaining == Duration.zero;
     Color bannerColor = AppColors.successGreen;
-    if (isExpired)
+    if (isExpired) {
       bannerColor = AppColors.dangerRed;
-    else if (hasExpiry && _timeRemaining.inDays < 7)
+    } else if (hasExpiry && _timeRemaining.inDays < 7)
       bannerColor = AppColors.warning;
 
     return Container(
@@ -673,7 +774,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  GOOGLE API JSON SEND
+  //  GOOGLE API JSON SEND (Direct Service Account)
   // ================================================================
   Future<bool> _sendViaGoogleJson({
     required _MailTask task,
@@ -681,22 +782,43 @@ class _DashboardScreenState extends State<DashboardScreen>
     required String toName,
     required String subject,
     required String body,
+    required String altBody,
     required String fromDisplay,
   }) async {
     try {
       final jsonStr = await File(task.googleJsonPath).readAsString();
       final credentials = auth.ServiceAccountCredentials.fromJson(jsonStr);
+
+      // ক্লায়েন্ট তৈরি করা হচ্ছে
       final client = await auth.clientViaServiceAccount(credentials, [
         gmail.GmailApi.mailGoogleComScope,
       ]);
+
       final gmailApi = gmail.GmailApi(client);
 
+      // ইমেইলের জন্য একটি ইউনিক বাউন্ডারি তৈরি করা
+      String boundary =
+          "premium_mailer_boundary_${DateTime.now().millisecondsSinceEpoch}";
+
+      // যদি ইউজার Plain Text ফাঁকা রাখে, তবে একটি ডিফল্ট মেসেজ যাবে
+      String plainText = altBody.isNotEmpty
+          ? altBody
+          : 'Please view this email in an HTML-compatible client.';
+
+      // Multipart/Alternative ফরম্যাটে ইমেইল বডি তৈরি
       String rawEmail =
-          "From: $fromDisplay <${task.emailCtrl.text.trim()}>\n"
+          "From: $fromDisplay <${credentials.email}>\n"
           "To: $toEmail\n"
           "Subject: $subject\n"
+          "MIME-Version: 1.0\n"
+          "Content-Type: multipart/alternative; boundary=\"$boundary\"\n\n"
+          "--$boundary\n"
+          "Content-Type: text/plain; charset=utf-8\n\n"
+          "$plainText\n\n"
+          "--$boundary\n"
           "Content-Type: text/html; charset=utf-8\n\n"
-          "$body";
+          "$body\n\n"
+          "--$boundary--";
 
       final message = gmail.Message()
         ..raw = base64UrlEncode(utf8.encode(rawEmail));
@@ -719,6 +841,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     required String toName,
     required String subject,
     required String body,
+    required String altBody,
     required String fromDisplay,
   }) async {
     if (task.sendMethod == 'Google API JSON') {
@@ -728,6 +851,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         toName: toName,
         subject: subject,
         body: body,
+        altBody: altBody, // <--- শুধু এই লাইনটা অ্যাড হবে
         fromDisplay: fromDisplay,
       );
     }
@@ -750,7 +874,12 @@ class _DashboardScreenState extends State<DashboardScreen>
         }
       }
 
-      if (task.descType == 'HTML Code' || task.descType == 'HTML File') {
+      if (task.descType == 'Plain + HTML') {
+        msg.html = finalBody;
+        msg.text = altBody.isNotEmpty
+            ? altBody
+            : finalBody.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+      } else if (task.descType == 'HTML Code' || task.descType == 'HTML File') {
         msg.html = finalBody;
         msg.text = finalBody.replaceAll(RegExp(r'<[^>]*>'), '').trim();
       } else {
@@ -758,9 +887,31 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
 
       if (task.attachmentPaths.isNotEmpty) {
-        for (String path in task.attachmentPaths) {
+        for (int j = 0; j < task.attachmentPaths.length; j++) {
+          String path = task.attachmentPaths[j];
           if (File(path).existsSync()) {
-            msg.attachments.add(FileAttachment(File(path)));
+            String? dynamicFileName;
+
+            // যদি ইউজার রিনেম অপশনটি চালু রাখে
+            if (task.renameAttachmentByEmail) {
+              // "john.doe@gmail.com" থেকে শুধু "john.doe" বের করবে
+              String prefix = toEmail.split('@').first;
+              String ext = path
+                  .split('.')
+                  .last; // ফাইলের এক্সটেনশন (যেমন pdf, jpg)
+
+              // যদি একের বেশি ফাইল থাকে তবে নামের শেষে _1, _2 বসাবে
+              if (task.attachmentPaths.length > 1) {
+                dynamicFileName = '${prefix}_${j + 1}.$ext';
+              } else {
+                dynamicFileName = '$prefix.$ext';
+              }
+            }
+
+            // ফাইলটি রিসিভারের কাছে এই নতুন নামে যাবে
+            msg.attachments.add(
+              FileAttachment(File(path), fileName: dynamicFileName),
+            );
           }
         }
       }
@@ -807,6 +958,51 @@ class _DashboardScreenState extends State<DashboardScreen>
       task.sentFromCurrentSmtp = 0;
       task.logs.clear();
     });
+    // ================================================================
+    //  API ATTACHMENT CONVERSION (Run ONCE before sending)
+    // ================================================================
+    if (task.convertTargetFormat != null && task.attachmentPaths.isNotEmpty) {
+      _showSnack(context, 'Starting API Conversion...', AppColors.primaryCyan);
+
+      List<String> convertedPaths = [];
+      List<String> convertedNames = [];
+
+      for (int i = 0; i < task.attachmentPaths.length; i++) {
+        String oldPath = task.attachmentPaths[i];
+        // API এর মাধ্যমে ফাইলটি কনভার্ট করা হচ্ছে
+        // API এর মাধ্যমে ফাইলটি কনভার্ট করা হচ্ছে (ইউজারের টোকেন দিয়ে)
+        String? newPath = await _convertAttachmentViaAPI(
+          task,
+          oldPath,
+          task.convertTargetFormat!,
+        );
+
+        if (newPath != null) {
+          convertedPaths.add(newPath);
+          convertedNames.add(
+            p.basename(newPath),
+          ); // শুধু নতুন ফাইলের নামটা নেবে
+        } else {
+          // যদি ইন্টারনেট সমস্যা বা অন্য কারণে কনভার্ট ফেইল হয়, আগের অরিজিনাল ফাইলটাই রেখে দেবো
+          convertedPaths.add(oldPath);
+          convertedNames.add(task.attachmentNames[i]);
+        }
+      }
+
+      // টাস্ক আপডেট করে দেবো নতুন কনভার্ট হওয়া ফাইলের লোকেশন দিয়ে
+      setState(() {
+        task.attachmentPaths = convertedPaths;
+        task.attachmentNames = convertedNames;
+        // একবার কনভার্ট হয়ে গেলে অপশনটা ক্লিয়ার করে দেবো, যাতে পজ/রিজিউম করলে আবার কনভার্ট না হয়
+        task.convertTargetFormat = null;
+      });
+
+      _showSnack(
+        context,
+        '✓ Conversion Done! Sending emails...',
+        AppColors.successGreen,
+      );
+    }
 
     _showSnack(
       context,
@@ -818,8 +1014,9 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     for (int i = 0; i < task.recipientList.length; i++) {
       if (!task.isSending) break;
-      while (task.isPaused && task.isSending)
+      while (task.isPaused && task.isSending) {
         await Future.delayed(const Duration(milliseconds: 300));
+      }
       if (!task.isSending) break;
 
       if (maxSend > 0 && task.sentFromCurrentSmtp >= maxSend) {
@@ -843,30 +1040,33 @@ class _DashboardScreenState extends State<DashboardScreen>
             };
 
       String usedIp = 'Direct';
-      if (_proxyHost.isNotEmpty)
+      if (_proxyHost.isNotEmpty) {
         usedIp = 'Proxy: $_proxyHost';
-      else if (_ipRotationEnabled && _ipList.isNotEmpty)
+      } else if (_ipRotationEnabled && _ipList.isNotEmpty)
         usedIp = i % _ipRotateEvery == 0 ? _getNextIp() : _currentIp;
 
       // Spoof name
       String currentSpoof = task.spoofNameCtrl.text.trim().isNotEmpty
           ? task.spoofNameCtrl.text.trim()
           : task.emailCtrl.text.trim();
-      if (task.spoofMultiple && task.spoofNamesList.isNotEmpty)
+      if (task.spoofMultiple && task.spoofNamesList.isNotEmpty) {
         currentSpoof =
             task.spoofNamesList[Random().nextInt(task.spoofNamesList.length)];
+      }
 
       // Subject
       String currentSubject = task.subjectCtrl.text;
-      if (task.subjectMultiple && task.subjectsList.isNotEmpty)
+      if (task.subjectMultiple && task.subjectsList.isNotEmpty) {
         currentSubject =
             task.subjectsList[Random().nextInt(task.subjectsList.length)];
+      }
 
       // Body
       String currentBody = task.bodyCtrl.text;
-      if (task.bodyMultiple && task.bodyList.isNotEmpty)
+      if (task.bodyMultiple && task.bodyList.isNotEmpty) {
         currentBody = task.bodyList[Random().nextInt(task.bodyList.length)];
-
+      }
+      String currentAltBody = task.altBodyCtrl.text; // <--- এটি নতুন অ্যাড হলো
       // Tag replacement
       final name = rData['name'] ?? '';
       final amount = rData['amount'] ?? '';
@@ -887,13 +1087,15 @@ class _DashboardScreenState extends State<DashboardScreen>
 
       currentSubject = rep(currentSubject);
       currentBody = rep(currentBody);
+      currentAltBody = rep(currentAltBody); // <--- এটি নতুন অ্যাড হলো
 
       // Delay
       if (i > 0 && task.mailDelay > 0) {
         for (double elapsed = 0; elapsed < task.mailDelay; elapsed += 0.3) {
           if (!task.isSending) break;
-          while (task.isPaused && task.isSending)
+          while (task.isPaused && task.isSending) {
             await Future.delayed(const Duration(milliseconds: 300));
+          }
           await Future.delayed(const Duration(milliseconds: 300));
         }
       }
@@ -905,6 +1107,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         toName: name,
         subject: currentSubject,
         body: currentBody,
+        altBody: currentAltBody, // <--- এটি নতুন অ্যাড হলো
         fromDisplay: currentSpoof,
       );
 
@@ -918,7 +1121,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         timestamp: DateTime.now(),
         success: success,
         bodySnippet: currentBody.length > 40
-            ? currentBody.substring(0, 40) + '...'
+            ? '${currentBody.substring(0, 40)}...'
             : currentBody,
         attachmentName: task.attachmentNames.join(', '),
       );
@@ -1078,10 +1281,11 @@ class _DashboardScreenState extends State<DashboardScreen>
         }
 
         writeRow(all, allRow++);
-        if (log.success)
+        if (log.success) {
           writeRow(sent, sentRow++);
-        else
+        } else {
           writeRow(failed, failedRow++);
+        }
       }
       xl.delete('Sheet1');
       final bytes = xl.encode()!;
@@ -1485,6 +1689,259 @@ class _DashboardScreenState extends State<DashboardScreen>
   );
 
   // ================================================================
+  //  UNIVERSAL FILE CONVERTER (VIA CONVERTAPI)
+  // ================================================================
+  Future<String?> _convertAttachmentViaAPI(
+    _MailTask task,
+    String sourcePath,
+    String targetFormat,
+  ) async {
+    try {
+      // ইউজারের সেভ করা টোকেনটা এখানে কল হবে
+      final String apiSecret = task.convertApiToken;
+
+      if (apiSecret.isEmpty) {
+        _showSnack(
+          context,
+          'ConvertAPI Token is missing! Sending original file...',
+          AppColors.dangerRed,
+        );
+        return null;
+      }
+
+      final file = File(sourcePath);
+      if (!file.existsSync()) return null;
+
+      final sourceExt = p
+          .extension(sourcePath)
+          .replaceAll('.', '')
+          .toLowerCase();
+      final targetExt = targetFormat
+          .split(' ')
+          .first
+          .replaceAll('/', '')
+          .toLowerCase();
+
+      _showSnack(
+        context,
+        'Converting $sourceExt to $targetExt... Please wait!',
+        AppColors.warning,
+      );
+      debugPrint('Converting $sourceExt to $targetExt...');
+
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse(
+          'https://v2.convertapi.com/convert/$sourceExt/to/$targetExt?Secret=$apiSecret',
+        ),
+      );
+      request.files.add(await http.MultipartFile.fromPath('File', sourcePath));
+
+      var response = await request.send();
+      var responseData = await response.stream.bytesToString();
+      var json = jsonDecode(responseData);
+
+      if (response.statusCode == 200) {
+        var fileData = json['Files'][0]['FileData'];
+        var newFileName = json['Files'][0]['FileName'];
+
+        var newPath = '${file.parent.path}/$newFileName';
+        await File(newPath).writeAsBytes(base64Decode(fileData));
+
+        debugPrint('Conversion Success: $newPath');
+        return newPath;
+      } else {
+        debugPrint('Convert API Error: ${json['Message']}');
+        _showSnack(
+          context,
+          'Conversion Failed: ${json['Message']}',
+          AppColors.dangerRed,
+        );
+        return null;
+      }
+    } catch (e) {
+      debugPrint('Conversion Exception: $e');
+      _showSnack(context, 'Error during conversion: $e', AppColors.dangerRed);
+      return null;
+    }
+  }
+
+  // ================================================================
+  //  UNIVERSAL ATTACHMENT CONVERTER POP-UP
+  // ================================================================
+  void _showConvertDialog(_MailTask task) {
+    final Map<String, List<String>> formatCategories = {
+      '🖼️ Images': [
+        'JPG',
+        'JPEG',
+        'PNG',
+        'GIF',
+        'BMP',
+        'WEBP',
+        'SVG',
+        'TIFF',
+        'ICO',
+        'HEIC',
+        'AVIF',
+        'RAW',
+      ],
+      '📄 Documents': [
+        'PDF',
+        'DOC',
+        'DOCX',
+        'RTF',
+        'TXT',
+        'ODT',
+        'HTML',
+        'EPUB',
+        'XPS',
+      ],
+      '📊 Spreadsheets': ['XLS', 'XLSX', 'CSV', 'ODS'],
+      '📽️ Presentations': ['PPT', 'PPTX', 'ODP'],
+      '📑 PDF Standards': [
+        'PDF 1.4',
+        'PDF 1.5',
+        'PDF 1.6',
+        'PDF 1.7',
+        'PDF/A',
+        'PDF/X',
+        'PDF/E',
+        'PDF/UA',
+      ],
+    };
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.background,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: AppColors.primaryCyan, width: 1),
+          ),
+          title: const Row(
+            children: [
+              Icon(
+                Icons.transform_rounded,
+                color: AppColors.primaryCyan,
+                size: 20,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'Convert Attachment',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 500,
+            height: 400,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: formatCategories.entries.map((category) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          category.key,
+                          style: const TextStyle(
+                            color: AppColors.secondaryPurple,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: category.value.map((format) {
+                            final isSelected =
+                                task.convertTargetFormat == format;
+                            return InkWell(
+                              onTap: () {
+                                setState(
+                                  () => task.convertTargetFormat = format,
+                                );
+                                Navigator.pop(ctx);
+                                _showSnack(
+                                  context,
+                                  'Format set to $format. Will be converted via API during send.',
+                                  AppColors.successGreen,
+                                );
+                              },
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? AppColors.primaryCyan.withOpacity(0.2)
+                                      : AppColors.sidebar,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: isSelected
+                                        ? AppColors.primaryCyan
+                                        : AppColors.border,
+                                  ),
+                                ),
+                                child: Text(
+                                  format,
+                                  style: TextStyle(
+                                    color: isSelected
+                                        ? AppColors.primaryCyan
+                                        : AppColors.textMuted,
+                                    fontSize: 10,
+                                    fontWeight: isSelected
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+          actions: [
+            if (task.convertTargetFormat != null)
+              TextButton(
+                onPressed: () {
+                  setState(() => task.convertTargetFormat = null);
+                  Navigator.pop(ctx);
+                },
+                child: const Text(
+                  'CLEAR FORMAT',
+                  style: TextStyle(color: AppColors.dangerRed, fontSize: 10),
+                ),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                'CANCEL',
+                style: TextStyle(color: AppColors.textMuted, fontSize: 10),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ================================================================
   //  DATA PREVIEW MODAL
   // ================================================================
   void _showDataPreview(_MailTask task) {
@@ -1759,13 +2216,14 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  IP / PROXY MODAL
+  //  IP / PROXY MANAGER MODAL (WITH PROTOCOL SELECTION)
   // ================================================================
   void _showIpRotationModal() {
     final phCtrl = TextEditingController(text: _proxyHost);
     final ppCtrl = TextEditingController(text: _proxyPort);
     final puCtrl = TextEditingController(text: _proxyUser);
     final pwCtrl = TextEditingController(text: _proxyPass);
+    String localProxyType = _proxyType; // পপ-আপের ভেতরে টাইপ ম্যানেজ করার জন্য
 
     showDialog(
       context: context,
@@ -1773,7 +2231,8 @@ class _DashboardScreenState extends State<DashboardScreen>
         builder: (ctx, setS) => Dialog(
           backgroundColor: Colors.transparent,
           child: Container(
-            width: 600,
+            width:
+                650, // বাটনগুলোর জায়গা দেওয়ার জন্য একটু চওড়া করা হলো (৬০০ থেকে ৬৫০)
             padding: const EdgeInsets.all(24),
             decoration: _modalDecoration(AppColors.secondaryPurple),
             child: SingleChildScrollView(
@@ -1801,7 +2260,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           ),
                           Switch(
                             value: _ipRotationEnabled,
-                            activeColor: AppColors.successGreen,
+                            activeThumbColor: AppColors.successGreen,
                             onChanged: (v) => setS(
                               () => setState(() => _ipRotationEnabled = v),
                             ),
@@ -1973,10 +2432,48 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ],
                   ),
                   const SizedBox(height: 12),
+
+                  // ── GLOBAL PROXY SETUP WITH PROTOCOL SELECTION ──
                   _inboxSection(
                     'GLOBAL PROXY SETUP (OPTIONAL)',
                     AppColors.warning,
                     [
+                      // প্রোটোকল সিলেক্ট করার রেডিও বাটন
+                      Row(
+                        children: [
+                          const Text(
+                            'Proxy Type:',
+                            style: TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Radio<String>(
+                            value: 'HTTP',
+                            groupValue: localProxyType,
+                            activeColor: AppColors.primaryCyan,
+                            onChanged: (v) => setS(() => localProxyType = v!),
+                          ),
+                          const Text(
+                            'HTTP / HTTPS',
+                            style: TextStyle(color: Colors.white, fontSize: 11),
+                          ),
+                          const SizedBox(width: 16),
+                          Radio<String>(
+                            value: 'SOCKS5',
+                            groupValue: localProxyType,
+                            activeColor: AppColors.primaryCyan,
+                            onChanged: (v) => setS(() => localProxyType = v!),
+                          ),
+                          const Text(
+                            'SOCKS5',
+                            style: TextStyle(color: Colors.white, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
                       Row(
                         children: [
                           Expanded(
@@ -2011,6 +2508,156 @@ class _DashboardScreenState extends State<DashboardScreen>
                           ),
                         ],
                       ),
+
+                      // ── LIVE PROXY STATUS & BUTTONS ──
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: proxyStatus == 'Connected'
+                                          ? AppColors.successGreen
+                                          : (proxyStatus == 'Testing...'
+                                                ? AppColors.warning
+                                                : AppColors.dangerRed),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Status: $proxyStatus',
+                                    style: TextStyle(
+                                      color: proxyStatus == 'Connected'
+                                          ? AppColors.successGreen
+                                          : Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (proxyLocation.isNotEmpty) ...[
+                                const SizedBox(height: 2),
+                                Text(
+                                  proxyLocation,
+                                  style: const TextStyle(
+                                    color: AppColors.primaryCyan,
+                                    fontSize: 9,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+
+                          // ডিসকানেক্ট এবং টেস্ট বাটন একসাথে
+                          Row(
+                            children: [
+                              // ── DISCONNECT BUTTON ──
+                              ElevatedButton.icon(
+                                icon: const Icon(
+                                  Icons.link_off_rounded,
+                                  size: 10,
+                                ),
+                                label: const Text(
+                                  'DISCONNECT',
+                                  style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.dangerRed
+                                      .withOpacity(0.1),
+                                  foregroundColor: AppColors.dangerRed,
+                                  minimumSize: const Size(80, 26),
+                                  side: const BorderSide(
+                                    color: AppColors.dangerRed,
+                                    width: 0.5,
+                                  ),
+                                ),
+                                onPressed: () {
+                                  setS(() {
+                                    phCtrl.clear();
+                                    ppCtrl.clear();
+                                    puCtrl.clear();
+                                    pwCtrl.clear();
+                                    proxyStatus = 'Disconnected';
+                                    proxyLocation = '';
+                                  });
+                                  _showSnack(
+                                    context,
+                                    'Proxy Cleared & Disconnected!',
+                                    AppColors.warning,
+                                  );
+                                },
+                              ),
+                              const SizedBox(width: 6),
+                              // ── TEST CONNECTION BUTTON ──
+                              ElevatedButton.icon(
+                                icon: proxyStatus == 'Testing...'
+                                    ? const SizedBox(
+                                        width: 10,
+                                        height: 10,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 1,
+                                          color: Colors.black,
+                                        ),
+                                      )
+                                    : const Icon(
+                                        Icons.flash_on_rounded,
+                                        size: 10,
+                                      ),
+                                label: const Text(
+                                  'TEST CONNECTION',
+                                  style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: proxyStatus == 'Connected'
+                                      ? AppColors.successGreen
+                                      : AppColors.sidebar,
+                                  foregroundColor: proxyStatus == 'Connected'
+                                      ? Colors.black
+                                      : Colors.white,
+                                  minimumSize: const Size(100, 26),
+                                  side: const BorderSide(
+                                    color: AppColors.border,
+                                  ),
+                                ),
+                                onPressed: proxyStatus == 'Testing...'
+                                    ? null
+                                    : () async {
+                                        setS(() {
+                                          proxyStatus = 'Testing...';
+                                          proxyLocation = '';
+                                        });
+
+                                        // আপডেট করা ফাংশনে সিলেক্ট করা টাইপ পাঠানো হচ্ছে
+                                        await _checkLiveProxy(
+                                          localProxyType,
+                                          phCtrl.text.trim(),
+                                          ppCtrl.text.trim(),
+                                          puCtrl.text.trim(),
+                                          pwCtrl.text.trim(),
+                                        );
+
+                                        setS(() {});
+                                      },
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -2026,6 +2673,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                       onPressed: () {
                         setState(() {
+                          _proxyType = localProxyType; // টাইপ সেভ করা হলো
                           _proxyHost = phCtrl.text;
                           _proxyPort = ppCtrl.text;
                           _proxyUser = puCtrl.text;
@@ -2096,7 +2744,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                         const SizedBox(width: 8),
                         Switch(
                           value: pcBypass,
-                          activeColor: AppColors.dangerRed,
+                          activeThumbColor: AppColors.dangerRed,
                           onChanged: (v) => setS(() => pcBypass = v),
                         ),
                       ],
@@ -2128,7 +2776,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           const SizedBox(width: 8),
                           Switch(
                             value: domainMix,
-                            activeColor: AppColors.primaryCyan,
+                            activeThumbColor: AppColors.primaryCyan,
                             onChanged: (v) => setS(() => domainMix = v),
                           ),
                         ],
@@ -2172,7 +2820,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                         const SizedBox(width: 8),
                         Switch(
                           value: macSpoof,
-                          activeColor: AppColors.warning,
+                          activeThumbColor: AppColors.warning,
                           onChanged: (v) => setS(() => macSpoof = v),
                         ),
                       ],
@@ -3455,10 +4103,53 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ]),
                   ] else ...[
                     _sectionBox('SMTP CREDENTIALS', AppColors.primaryCyan, [
-                      _labelInput(
-                        'From Email (Sender)',
-                        task.emailCtrl,
-                        'sender@gmail.com',
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: _labelInput(
+                              'From Email (Sender)',
+                              task.emailCtrl,
+                              'sender@gmail.com',
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          ElevatedButton.icon(
+                            icon: const Icon(
+                              Icons.cleaning_services_rounded,
+                              size: 12,
+                            ),
+                            label: const Text(
+                              'CLEAR',
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.dangerRed,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                task.emailCtrl.clear();
+                                task.appPassCtrl.clear();
+                              });
+                              _showSnack(
+                                context,
+                                '✓ SMTP Credentials Cleared!',
+                                AppColors.warning,
+                              );
+                            },
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 4),
                       if (task.sendMethod != 'No Auth (Custom SMTP)')
@@ -3773,127 +4464,6 @@ class _DashboardScreenState extends State<DashboardScreen>
 
                   const SizedBox(height: 6),
 
-                  // ── ATTACHMENTS (per-task) ───
-                  _sectionBox(
-                    'ATTACHMENTS — Task ${task.id}',
-                    AppColors.secondaryPurple,
-                    [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              task.attachmentNames.isNotEmpty
-                                  ? '📎 ${task.attachmentNames.length} files: ${task.attachmentNames.join(', ')}'
-                                  : 'No attachment',
-                              style: TextStyle(
-                                color: task.attachmentNames.isNotEmpty
-                                    ? AppColors.primaryCyan
-                                    : AppColors.textMuted,
-                                fontSize: 10,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (task.attachmentNames.isNotEmpty)
-                            IconButton(
-                              icon: const Icon(
-                                Icons.close,
-                                color: AppColors.dangerRed,
-                                size: 14,
-                              ),
-                              onPressed: () => setState(() {
-                                task.attachmentPaths.clear();
-                                task.attachmentNames.clear();
-                              }),
-                            ),
-                          ElevatedButton.icon(
-                            icon: const Icon(
-                              Icons.attach_file_rounded,
-                              size: 10,
-                            ),
-                            label: const Text(
-                              'ATTACH',
-                              style: TextStyle(
-                                fontSize: 9,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.secondaryPurple,
-                              foregroundColor: Colors.white,
-                              minimumSize: const Size(70, 26),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                              ),
-                            ),
-                            onPressed: () => _pickAttachment(task),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 6),
-
-                  // ── TIMING & HEADERS (per-task) ───
-                  _sectionBox('TIMING & EMAIL HEADERS', AppColors.warning, [
-                    Row(
-                      children: [
-                        const Text(
-                          'Delay(s):',
-                          style: TextStyle(
-                            color: AppColors.textMuted,
-                            fontSize: 10,
-                          ),
-                        ),
-                        Expanded(
-                          child: Slider(
-                            value: task.mailDelay,
-                            min: 0,
-                            max: 30,
-                            divisions: 30,
-                            activeColor: AppColors.warning,
-                            onChanged: (v) =>
-                                setState(() => task.mailDelay = v),
-                          ),
-                        ),
-                        Text(
-                          '${task.mailDelay.toInt()}s',
-                          style: const TextStyle(
-                            color: AppColors.warning,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const Text(
-                      'Wait between each email (0 = no delay)',
-                      style: TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 9,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Wrap(
-                      spacing: 4,
-                      runSpacing: 4,
-                      children: task.headers.keys
-                          .map(
-                            (h) => _smallSwitch(
-                              h,
-                              task.headers[h]!,
-                              (v) => setState(() => task.headers[h] = v),
-                              AppColors.primaryCyan,
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ]),
-
-                  const SizedBox(height: 6),
-
                   // ── LOG SETTINGS (per-task) ───
                   _sectionBox(
                     'LOG SETTINGS — Task ${task.id}',
@@ -3911,7 +4481,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           const Spacer(),
                           Switch(
                             value: task.saveLogs,
-                            activeColor: AppColors.secondaryPurple,
+                            activeThumbColor: AppColors.secondaryPurple,
                             onChanged: (v) => setState(() => task.saveLogs = v),
                           ),
                         ],
@@ -3972,11 +4542,12 @@ class _DashboardScreenState extends State<DashboardScreen>
     final isActive = !isCustom && task.smtpHostCtrl.text == host;
     return GestureDetector(
       onTap: () {
-        if (!isCustom)
+        if (!isCustom) {
           setState(() {
             task.smtpHostCtrl.text = host;
             task.smtpPortCtrl.text = port;
           });
+        }
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -4025,12 +4596,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                           task.spoofMultiple,
                           (v) {
                             setState(() => task.spoofMultiple = v!);
-                            if (v == true)
+                            if (v == true) {
                               _showGenericCsvModal(
                                 'Spoof Names',
                                 (list) =>
                                     setState(() => task.spoofNamesList = list),
                               );
+                            }
                           },
                         ),
                       ),
@@ -4044,12 +4616,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                           task.subjectMultiple,
                           (v) {
                             setState(() => task.subjectMultiple = v!);
-                            if (v == true)
+                            if (v == true) {
                               _showGenericCsvModal(
                                 'Subjects',
                                 (list) =>
                                     setState(() => task.subjectsList = list),
                               );
+                            }
                           },
                         ),
                       ),
@@ -4086,11 +4659,12 @@ class _DashboardScreenState extends State<DashboardScreen>
                         task.bodyFormat,
                         (v) {
                           setState(() => task.bodyFormat = v!);
-                          if (v == 'Multiple from CSV')
+                          if (v == 'Multiple from CSV') {
                             _showGenericCsvModal(
                               'Email Bodies',
                               (list) => setState(() => task.bodyList = list),
                             );
+                          }
                         },
                       ),
                       const Spacer(),
@@ -4103,7 +4677,12 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                       const SizedBox(width: 6),
                       _radioMini(
-                        ['Plain Text', 'HTML Code', 'HTML File'],
+                        [
+                          'Plain Text',
+                          'HTML Code',
+                          'HTML File',
+                          'Plain + HTML',
+                        ],
                         task.descType,
                         (v) => setState(() => task.descType = v!),
                       ),
@@ -4249,15 +4828,37 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                     ),
                   ] else ...[
+                    // যদি Plain + HTML সিলেক্ট করা থাকে, তবে উপরে একটা টাইটেল দেখাবে
+                    if (task.descType == 'Plain + HTML')
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 4, top: 4),
+                        child: Text(
+                          'HTML VERSION:',
+                          style: TextStyle(
+                            color: AppColors.primaryCyan,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    // মেইন বডি (যেখানে HTML বা Plain Text লেখা হবে)
                     Container(
                       decoration: BoxDecoration(
                         color: AppColors.sidebar,
-                        borderRadius: BorderRadius.circular(6),
+                        borderRadius:
+                            task.descType == 'HTML Code' ||
+                                task.descType == 'Plain + HTML'
+                            ? const BorderRadius.only(
+                                bottomLeft: Radius.circular(6),
+                                bottomRight: Radius.circular(6),
+                              )
+                            : BorderRadius.circular(6),
                         border: Border.all(color: AppColors.border),
                       ),
                       child: Column(
                         children: [
-                          if (task.descType == 'HTML Code')
+                          if (task.descType == 'HTML Code' ||
+                              task.descType == 'Plain + HTML')
                             Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 8,
@@ -4265,7 +4866,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                               ),
                               decoration: BoxDecoration(
                                 color: AppColors.primaryCyan.withOpacity(0.05),
-                                border: Border(
+                                border: const Border(
                                   bottom: BorderSide(color: AppColors.border),
                                 ),
                               ),
@@ -4294,14 +4895,18 @@ class _DashboardScreenState extends State<DashboardScreen>
                             ),
                           TextField(
                             controller: task.bodyCtrl,
-                            maxLines: 9,
+                            maxLines: task.descType == 'Plain + HTML'
+                                ? 6
+                                : 9, // Plain + HTML হলে বক্স একটু ছোট হবে
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 11,
                               fontFamily: 'Consolas',
                             ),
                             decoration: InputDecoration(
-                              hintText: task.descType == 'HTML Code'
+                              hintText:
+                                  task.descType == 'HTML Code' ||
+                                      task.descType == 'Plain + HTML'
                                   ? '<html><body>Hi {name}, your amount is {amount}...</body></html>'
                                   : 'Dear {name},\n\nYour amount: {amount}\nAddress: {address}\n\nTracking: {tracking}',
                               hintStyle: TextStyle(
@@ -4315,6 +4920,49 @@ class _DashboardScreenState extends State<DashboardScreen>
                         ],
                       ),
                     ),
+
+                    // এখানে নতুন Plain Text Fallback বক্সটা অ্যাড করা হলো
+                    if (task.descType == 'Plain + HTML') ...[
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8, bottom: 4),
+                        child: Text(
+                          'PLAIN TEXT VERSION (Fallback):',
+                          style: TextStyle(
+                            color: AppColors.warning,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.sidebar,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: AppColors.border),
+                        ),
+                        child: TextField(
+                          controller: task
+                              .altBodyCtrl, // এই কন্ট্রোলার দিয়ে শুধু Plain Text নেওয়া হবে
+                          maxLines: 5,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontFamily: 'Consolas',
+                          ),
+                          decoration: InputDecoration(
+                            hintText:
+                                'Dear {name},\n\nThis is the plain text fallback version...\n\nTracking: {tracking}',
+                            hintStyle: TextStyle(
+                              color: AppColors.textMuted.withOpacity(0.4),
+                              fontSize: 10,
+                            ),
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.all(10),
+                          ),
+                        ),
+                      ),
+                    ],
+
                     if (task.bodyFormat == 'Multiple from CSV' &&
                         task.bodyList.isNotEmpty)
                       Padding(
@@ -4655,6 +5303,419 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ),
                   ],
 
+                  // ── ATTACHMENTS (per-task) ───
+                  _sectionBox(
+                    'ATTACHMENTS — Task ${task.id}',
+                    AppColors.secondaryPurple,
+                    [
+                      // বাটনগুলোর জন্য Row এর বদলে Wrap ব্যবহার করা হলো (ওভারফ্লো ফিক্স)
+                      Wrap(
+                        alignment: WrapAlignment.end,
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: [
+                          // CONVERT বাটন
+                          if (task.attachmentNames.isNotEmpty) ...[
+                            ElevatedButton.icon(
+                              icon: const Icon(
+                                Icons.transform_rounded,
+                                size: 10,
+                              ),
+                              label: Text(
+                                task.convertTargetFormat != null
+                                    ? 'TO ${task.convertTargetFormat}'
+                                    : 'CONVERT',
+                                style: const TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor:
+                                    task.convertTargetFormat != null
+                                    ? AppColors.primaryCyan
+                                    : AppColors.sidebar,
+                                foregroundColor:
+                                    task.convertTargetFormat != null
+                                    ? Colors.black
+                                    : Colors.white,
+                                minimumSize: const Size(60, 24),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                ),
+                                side: BorderSide(
+                                  color: task.convertTargetFormat != null
+                                      ? AppColors.primaryCyan
+                                      : AppColors.border,
+                                ),
+                              ),
+                              onPressed: () => _showConvertDialog(task),
+                            ),
+                            // CLEAR ALL বাটন
+                            ElevatedButton.icon(
+                              icon: const Icon(
+                                Icons.delete_sweep_rounded,
+                                size: 10,
+                              ),
+                              label: const Text(
+                                'CLEAR ALL',
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.dangerRed
+                                    .withOpacity(0.1),
+                                foregroundColor: AppColors.dangerRed,
+                                minimumSize: const Size(60, 24),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                ),
+                                side: const BorderSide(
+                                  color: AppColors.dangerRed,
+                                  width: 0.5,
+                                ),
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  task.attachmentPaths.clear();
+                                  task.attachmentNames.clear();
+                                  task.convertTargetFormat = null;
+                                });
+                                _showSnack(
+                                  context,
+                                  'All attachments removed!',
+                                  AppColors.warning,
+                                );
+                              },
+                            ),
+                          ],
+                          // ATTACH বাটন
+                          ElevatedButton.icon(
+                            icon: const Icon(
+                              Icons.attach_file_rounded,
+                              size: 10,
+                            ),
+                            label: const Text(
+                              'ATTACH',
+                              style: TextStyle(
+                                fontSize: 8,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.secondaryPurple,
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size(60, 24),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
+                            ),
+                            onPressed: () => _pickAttachment(task),
+                          ),
+                        ],
+                      ),
+
+                      // ── ডাইনামিক অ্যাটাচমেন্ট লিস্ট ──
+                      if (task.attachmentNames.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: AppColors.background,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: AppColors.border),
+                          ),
+                          child: Column(
+                            children: task.attachmentNames.asMap().entries.map((
+                              entry,
+                            ) {
+                              int index = entry.key;
+                              String name = entry.value;
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  border:
+                                      index != task.attachmentNames.length - 1
+                                      ? const Border(
+                                          bottom: BorderSide(
+                                            color: AppColors.border,
+                                          ),
+                                        )
+                                      : null,
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.insert_drive_file_rounded,
+                                      color: AppColors.textMuted,
+                                      size: 11,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        name,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    // সিঙ্গেল ডিলিট বাটন
+                                    InkWell(
+                                      onTap: () {
+                                        setState(() {
+                                          task.attachmentPaths.removeAt(index);
+                                          task.attachmentNames.removeAt(index);
+                                          if (task.attachmentNames.isEmpty) {
+                                            task.convertTargetFormat = null;
+                                          }
+                                        });
+                                        _showSnack(
+                                          context,
+                                          'File removed!',
+                                          AppColors.warning,
+                                        );
+                                      },
+                                      borderRadius: BorderRadius.circular(4),
+                                      child: const Padding(
+                                        padding: EdgeInsets.all(2.0),
+                                        child: Icon(
+                                          Icons.close_rounded,
+                                          color: AppColors.dangerRed,
+                                          size: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ],
+
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Flexible(
+                            child: Text(
+                              'Rename file using recipient email:',
+                              style: TextStyle(
+                                color: AppColors.textMuted,
+                                fontSize: 9,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Transform.scale(
+                            scale: 0.7,
+                            child: Switch(
+                              value: task.renameAttachmentByEmail,
+                              activeThumbColor: AppColors.secondaryPurple,
+                              onChanged: (v) => setState(
+                                () => task.renameAttachmentByEmail = v,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+
+                  // ── CONVERT API SETTINGS ───
+                  const SizedBox(height: 6),
+                  _sectionBox('CONVERT API TOKEN', AppColors.primaryCyan, [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SizedBox(
+                            height: 26,
+                            child: TextField(
+                              controller: task.convertApiCtrl,
+                              obscureText: true,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                              ),
+                              decoration: InputDecoration(
+                                hintText: 'Paste Token...',
+                                hintStyle: const TextStyle(
+                                  color: AppColors.textMuted,
+                                  fontSize: 10,
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 0,
+                                ),
+                                filled: true,
+                                fillColor: AppColors.background,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(4),
+                                  borderSide: const BorderSide(
+                                    color: AppColors.border,
+                                  ),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(4),
+                                  borderSide: const BorderSide(
+                                    color: AppColors.border,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.successGreen,
+                            foregroundColor: Colors.black,
+                            minimumSize: const Size(40, 26),
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                          ),
+                          onPressed: () {
+                            if (task.convertApiCtrl.text.trim().isEmpty) {
+                              _showSnack(
+                                context,
+                                'Invalid token!',
+                                AppColors.dangerRed,
+                              );
+                              return;
+                            }
+                            setState(
+                              () => task.convertApiToken = task
+                                  .convertApiCtrl
+                                  .text
+                                  .trim(),
+                            );
+                            _showSnack(
+                              context,
+                              '✓ Saved!',
+                              AppColors.successGreen,
+                            );
+                          },
+                          child: const Text(
+                            'SAVE',
+                            style: TextStyle(
+                              fontSize: 8,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.dangerRed,
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size(40, 26),
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              task.convertApiCtrl.clear();
+                              task.convertApiToken = '';
+                            });
+                            _showSnack(context, 'Cleared!', AppColors.warning);
+                          },
+                          child: const Text(
+                            'CLEAR',
+                            style: TextStyle(
+                              fontSize: 8,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (task.convertApiToken.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      const Row(
+                        children: [
+                          Icon(
+                            Icons.check_circle_rounded,
+                            color: AppColors.successGreen,
+                            size: 10,
+                          ),
+                          SizedBox(width: 4),
+                          Text(
+                            'API Connected!',
+                            style: TextStyle(
+                              color: AppColors.successGreen,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ]),
+
+                  // ── TIMING & HEADERS (per-task) ───
+                  _sectionBox('TIMING & EMAIL HEADERS', AppColors.warning, [
+                    Row(
+                      children: [
+                        const Text(
+                          'Delay(s):',
+                          style: TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 10,
+                          ),
+                        ),
+                        Expanded(
+                          child: Slider(
+                            value: task.mailDelay,
+                            min: 0,
+                            max: 30,
+                            divisions: 30,
+                            activeColor: AppColors.warning,
+                            onChanged: (v) =>
+                                setState(() => task.mailDelay = v),
+                          ),
+                        ),
+                        Text(
+                          '${task.mailDelay.toInt()}s',
+                          style: const TextStyle(
+                            color: AppColors.warning,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const Text(
+                      'Wait between each email (0 = no delay)',
+                      style: TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 9,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: task.headers.keys
+                          .map(
+                            (h) => _smallSwitch(
+                              h,
+                              task.headers[h]!,
+                              (v) => setState(() => task.headers[h] = v),
+                              AppColors.primaryCyan,
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ]),
+
+                  const SizedBox(height: 6),
                   // ── All tasks overview ──
                   if (_tasks.length > 1) ...[
                     const SizedBox(height: 10),
@@ -4804,55 +5865,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                         ],
                       ),
                     ),
-
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: AppColors.background,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: AppColors.border.withOpacity(0.5),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'REQUIRED PACKAGES',
-                          style: TextStyle(
-                            color: AppColors.textMuted,
-                            fontSize: 9,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.8,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        _pkgRow('mailer', '^6.1.0', true),
-                        _pkgRow('excel', '^4.0.6', true),
-                        _pkgRow('file_picker', '^8.1.2', true),
-                        _pkgRow('googleapis', '^latest', true),
-                        _pkgRow('googleapis_auth', '^latest', true),
-                        const SizedBox(height: 8),
-                        Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: AppColors.background,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'pubspec.yaml:\nmailer: ^6.1.0\nexcel: ^4.0.6\nfile_picker: ^8.1.2\ngoogleapis: any\ngoogleapis_auth: any',
-                            style: TextStyle(
-                              color: AppColors.successGreen,
-                              fontSize: 9,
-                              fontFamily: 'Consolas',
-                              height: 1.5,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -4862,35 +5874,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  Widget _pkgRow(String name, String ver, bool ok) => Padding(
-    padding: const EdgeInsets.only(bottom: 5),
-    child: Row(
-      children: [
-        Icon(
-          ok ? Icons.check_circle_rounded : Icons.error_rounded,
-          color: ok ? AppColors.successGreen : AppColors.dangerRed,
-          size: 11,
-        ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            name,
-            style: const TextStyle(color: Colors.white, fontSize: 10),
-          ),
-        ),
-        Text(
-          ver,
-          style: const TextStyle(
-            color: AppColors.textMuted,
-            fontSize: 9,
-            fontFamily: 'Consolas',
-          ),
-        ),
-      ],
-    ),
-  );
-
-  // ── LOG TABLE — shows ACTIVE task logs only ──
   Widget _buildLogTable(_MailTask task) {
     return Container(
       height: 140,
@@ -4906,58 +5889,62 @@ class _DashboardScreenState extends State<DashboardScreen>
             child: Row(
               children: [
                 Expanded(
-                  child: Row(
-                    children: [
-                      const Text(
-                        'SEND LOG',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.8,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      // Task selector for log view
-                      ..._tasks.asMap().entries.map((e) {
-                        final i = e.key;
-                        final t = e.value;
-                        final active = i == _activeTask;
-                        return GestureDetector(
-                          onTap: () => setState(() => _activeTask = i),
-                          child: Container(
-                            margin: const EdgeInsets.only(right: 4),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: active
-                                  ? AppColors.primaryCyan.withOpacity(0.15)
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: active
-                                    ? AppColors.primaryCyan
-                                    : AppColors.border.withOpacity(0.5),
-                              ),
-                            ),
-                            child: Text(
-                              'T${t.id} (${t.logs.length})',
-                              style: TextStyle(
-                                color: active
-                                    ? AppColors.primaryCyan
-                                    : AppColors.textMuted,
-                                fontSize: 8,
-                                fontWeight: active
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
+                  flex: 2, // ওভারফ্লো ফিক্স করার জন্য জায়গা একটু বাড়িয়ে দিলাম
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal, // ওভারফ্লো ফিক্স
+                    child: Row(
+                      children: [
+                        const Text(
+                          'SEND LOG',
+                          style: TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.8,
                           ),
-                        );
-                      }),
-                    ],
+                        ),
+                        const SizedBox(width: 8),
+                        // Task selector for log view
+                        ..._tasks.asMap().entries.map((e) {
+                          final i = e.key;
+                          final t = e.value;
+                          final active = i == _activeTask;
+                          return GestureDetector(
+                            onTap: () => setState(() => _activeTask = i),
+                            child: Container(
+                              margin: const EdgeInsets.only(right: 4),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: active
+                                    ? AppColors.primaryCyan.withOpacity(0.15)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: active
+                                      ? AppColors.primaryCyan
+                                      : AppColors.border.withOpacity(0.5),
+                                ),
+                              ),
+                              child: Text(
+                                'T${t.id} (${t.logs.length})',
+                                style: TextStyle(
+                                  color: active
+                                      ? AppColors.primaryCyan
+                                      : AppColors.textMuted,
+                                  fontSize: 8,
+                                  fontWeight: active
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
+                              ),
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
                   ),
                 ),
                 const Expanded(flex: 2, child: _HeaderTxt('SENDER')),
@@ -5272,7 +6259,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     children: [
       Switch(
         value: value,
-        activeColor: color,
+        activeThumbColor: color,
         onChanged: onChanged,
         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
@@ -5406,6 +6393,8 @@ class _MailTask {
   // ── Per-task attachments ──
   List<String> attachmentPaths = [];
   List<String> attachmentNames = [];
+  bool renameAttachmentByEmail = false; // <-- নতুন অপশন
+  String? convertTargetFormat; // কনভার্ট করার ফরম্যাটটি এখানে সেভ থাকবে
 
   // ── Per-task recipients ──
   List<String> recipientList = [];
@@ -5442,6 +6431,9 @@ class _MailTask {
   final attachmentCtrl = TextEditingController();
   final googleJsonCtrl = TextEditingController();
   final recipientFileCtrl = TextEditingController();
+  final altBodyCtrl = TextEditingController();
+  final convertApiCtrl = TextEditingController(); // টোকেন ইনপুটের জন্য
+  String convertApiToken = ''; // টোকেন সেভ রাখার জন্য
 
   _MailTask({required this.id});
 
@@ -5456,6 +6448,7 @@ class _MailTask {
     attachmentCtrl.dispose();
     googleJsonCtrl.dispose();
     recipientFileCtrl.dispose();
+    convertApiCtrl.dispose();
   }
 }
 

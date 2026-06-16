@@ -15,7 +15,7 @@ void main() async {
 }
 
 class PremiumMailerApp extends StatelessWidget {
-  const PremiumMailerApp({Key? key}) : super(key: key);
+  const PremiumMailerApp({super.key});
 
   @override
   Widget build(BuildContext context) {
