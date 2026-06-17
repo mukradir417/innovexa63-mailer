@@ -18,7 +18,7 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
 // ================================================================
-//  DASHBOARD SCREEN - INNOVEXA63 MAILER ULTRA 8.0
+//  DASHBOARD SCREEN - VEXA63 ULTRA 2.0
 //  NEW v8: Full Multi-Task ISOLATION fix —
 //          Each task has its own: logs, sent/failed/pending counts,
 //          send state, pause state, SMTP limit counter.
@@ -3999,7 +3999,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             text: const TextSpan(
               children: [
                 TextSpan(
-                  text: 'INNOVEXA',
+                  text: 'VEXA',
                   style: TextStyle(
                     color: AppColors.primaryCyan,
                     fontSize: 16,
@@ -4016,7 +4016,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
                 ),
                 TextSpan(
-                  text: ' MAILER ULTRA 8.0',
+                  text: ' ULTRA 2.0',
                   style: TextStyle(
                     color: AppColors.textMuted,
                     fontSize: 10,

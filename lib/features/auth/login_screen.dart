@@ -12,6 +12,14 @@ import '../admin/admin_dashboard.dart';
 //  Role-based routing:
 //    admin / super_admin / sub_admin  →  AdminDashboard
 //    user                             →  DashboardScreen
+//
+//  v4.1 — COMPACT / OVERFLOW-SAFE LAYOUT
+//  • Wrapped content in SingleChildScrollView so small/resized
+//    desktop windows never throw overflow errors.
+//  • Reduced overall vertical paddings/margins/font sizes so the
+//    whole login card fits comfortably in a smaller window.
+//  • NOTHING removed — all original logic, fields, dialogs and
+//    Firebase/Firestore flow kept 100% intact.
 // ================================================================
 
 class LoginScreen extends StatefulWidget {
@@ -297,66 +305,83 @@ class _LoginScreenState extends State<LoginScreen>
 
   // ================================================================
   //  BUILD
+  //  NOTE: Everything is now wrapped in a SingleChildScrollView
+  //  inside a LayoutBuilder, so the screen scales down cleanly on
+  //  smaller / resized desktop windows instead of overflowing.
   // ================================================================
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Stack(
         children: [
           Positioned.fill(child: CustomPaint(painter: _GridPainter())),
 
-          Positioned(
-            top: -160,
-            left: -160,
-            child: _GlowCircle(
-              color: AppColors.primaryCyan,
-              size: size.width * 0.55,
-              opacity: 0.06,
-            ),
-          ),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final w = constraints.maxWidth;
+              final h = constraints.maxHeight;
 
-          Positioned(
-            bottom: -130,
-            right: -130,
-            child: _GlowCircle(
-              color: AppColors.secondaryPurple,
-              size: size.width * 0.48,
-              opacity: 0.07,
-            ),
-          ),
-
-          FadeTransition(
-            opacity: _fadeAnim,
-            child: SlideTransition(
-              position: _slideAnim,
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: 420,
-                    maxHeight: size.height,
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        _buildLogo(),
-                        SizedBox(height: size.height * 0.032),
-                        _buildCard(),
-                        SizedBox(height: size.height * 0.022),
-                        _buildFooter(),
-                        SizedBox(height: size.height * 0.016),
-                        _buildStatusBar(),
-                      ],
+              return Stack(
+                children: [
+                  Positioned(
+                    top: -120,
+                    left: -120,
+                    child: _GlowCircle(
+                      color: AppColors.primaryCyan,
+                      size: w * 0.5,
+                      opacity: 0.06,
                     ),
                   ),
-                ),
-              ),
-            ),
+                  Positioned(
+                    bottom: -100,
+                    right: -100,
+                    child: _GlowCircle(
+                      color: AppColors.secondaryPurple,
+                      size: w * 0.42,
+                      opacity: 0.07,
+                    ),
+                  ),
+
+                  FadeTransition(
+                    opacity: _fadeAnim,
+                    child: SlideTransition(
+                      position: _slideAnim,
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: h - 32, // keeps it centered when tall
+                          ),
+                          child: Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 380),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  _buildLogo(),
+                                  const SizedBox(height: 18),
+                                  _buildCard(),
+                                  const SizedBox(height: 14),
+                                  _buildFooter(),
+                                  const SizedBox(height: 10),
+                                  _buildStatusBar(),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -367,11 +392,11 @@ class _LoginScreenState extends State<LoginScreen>
     return Column(
       children: [
         Container(
-          width: 54,
-          height: 54,
+          width: 46,
+          height: 46,
           decoration: BoxDecoration(
             color: AppColors.sidebar,
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: AppColors.primaryCyan.withOpacity(0.45),
               width: 1.5,
@@ -379,48 +404,48 @@ class _LoginScreenState extends State<LoginScreen>
             boxShadow: [
               BoxShadow(
                 color: AppColors.primaryCyan.withOpacity(0.16),
-                blurRadius: 20,
-                spreadRadius: 2,
+                blurRadius: 16,
+                spreadRadius: 1,
               ),
             ],
           ),
           child: const Icon(
             Icons.mark_email_read_rounded,
             color: AppColors.primaryCyan,
-            size: 26,
+            size: 22,
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         RichText(
           text: const TextSpan(
             children: [
               TextSpan(
-                text: 'INNOVEXA',
+                text: 'VEXA',
                 style: TextStyle(
                   color: AppColors.primaryCyan,
-                  fontSize: 26,
+                  fontSize: 22,
                   fontWeight: FontWeight.w900,
-                  letterSpacing: 2.5,
+                  letterSpacing: 2.2,
                 ),
               ),
               TextSpan(
-                text: '63',
+                text: '63 ULTRA',
                 style: TextStyle(
                   color: AppColors.secondaryPurple,
-                  fontSize: 26,
+                  fontSize: 22,
                   fontWeight: FontWeight.w900,
-                  letterSpacing: 2,
+                  letterSpacing: 1.8,
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 3),
         const Text(
           'Smart Delivery. Intelligent Automation.',
           style: TextStyle(
             color: AppColors.textMuted,
-            fontSize: 10,
+            fontSize: 9,
             letterSpacing: 0.5,
           ),
         ),
@@ -431,10 +456,10 @@ class _LoginScreenState extends State<LoginScreen>
   Widget _buildCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(26),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppColors.sidebar,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: AppColors.primaryCyan.withOpacity(0.22),
           width: 1.5,
@@ -442,13 +467,13 @@ class _LoginScreenState extends State<LoginScreen>
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.4),
-            blurRadius: 40,
-            offset: const Offset(0, 16),
+            blurRadius: 30,
+            offset: const Offset(0, 12),
           ),
           BoxShadow(
             color: AppColors.primaryCyan.withOpacity(0.05),
-            blurRadius: 36,
-            spreadRadius: 4,
+            blurRadius: 28,
+            spreadRadius: 3,
           ),
         ],
       ),
@@ -460,46 +485,46 @@ class _LoginScreenState extends State<LoginScreen>
             children: [
               Container(
                 width: 3,
-                height: 18,
+                height: 16,
                 decoration: BoxDecoration(
                   color: AppColors.primaryCyan,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 9),
               const Text(
                 'SYSTEM AUTHENTICATION',
                 style: TextStyle(
                   color: AppColors.textMain,
-                  fontSize: 12,
+                  fontSize: 11,
                   fontWeight: FontWeight.bold,
-                  letterSpacing: 0.8,
+                  letterSpacing: 0.7,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 3),
           const Padding(
-            padding: EdgeInsets.only(left: 13),
+            padding: EdgeInsets.only(left: 12),
             child: Text(
               'Enter your credentials to access the platform.',
-              style: TextStyle(color: AppColors.textMuted, fontSize: 10),
+              style: TextStyle(color: AppColors.textMuted, fontSize: 9.5),
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
 
           _FieldLabel('SYSTEM USER ID'),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           _buildTextField(
             controller: _userIdCtrl,
-            hint: 'e.g. rasel417 or admin',
+            hint: 'e.g. demo123',
             icon: Icons.person_outline_rounded,
             obscure: false,
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
 
           _FieldLabel('ACCESS PASSWORD'),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           _buildTextField(
             controller: _passwordCtrl,
             hint: '••••••••',
@@ -512,9 +537,9 @@ class _LoginScreenState extends State<LoginScreen>
           ),
 
           if (_errorMessage.isNotEmpty) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
               decoration: BoxDecoration(
                 color: AppColors.dangerRed.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(8),
@@ -530,17 +555,17 @@ class _LoginScreenState extends State<LoginScreen>
                     child: Icon(
                       Icons.warning_amber_rounded,
                       color: AppColors.dangerRed,
-                      size: 14,
+                      size: 13,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 7),
                   Expanded(
                     child: Text(
                       _errorMessage,
                       style: const TextStyle(
                         color: AppColors.dangerRed,
-                        fontSize: 10,
-                        height: 1.4,
+                        fontSize: 9.5,
+                        height: 1.35,
                       ),
                     ),
                   ),
@@ -549,11 +574,11 @@ class _LoginScreenState extends State<LoginScreen>
             ),
           ],
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
 
           SizedBox(
             width: double.infinity,
-            height: 46,
+            height: 42,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primaryCyan,
@@ -562,31 +587,31 @@ class _LoginScreenState extends State<LoginScreen>
                   0.35,
                 ),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(9),
                 ),
                 elevation: 0,
               ),
               onPressed: _isLoading ? null : _login,
               child: _isLoading
                   ? const SizedBox(
-                      width: 20,
-                      height: 20,
+                      width: 18,
+                      height: 18,
                       child: CircularProgressIndicator(
                         color: Colors.black,
-                        strokeWidth: 2.5,
+                        strokeWidth: 2.2,
                       ),
                     )
                   : Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: const [
-                        Icon(Icons.login_rounded, size: 17),
-                        SizedBox(width: 8),
+                        Icon(Icons.login_rounded, size: 16),
+                        SizedBox(width: 7),
                         Text(
                           'INITIALIZE LOGIN',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                            letterSpacing: 0.7,
+                            fontSize: 11,
+                            letterSpacing: 0.6,
                           ),
                         ),
                       ],
@@ -610,15 +635,15 @@ class _LoginScreenState extends State<LoginScreen>
     return TextField(
       controller: controller,
       obscureText: obscure,
-      style: const TextStyle(color: Colors.white, fontSize: 13),
+      style: const TextStyle(color: Colors.white, fontSize: 12.5),
       onSubmitted: onSubmit,
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: TextStyle(
           color: AppColors.textMuted.withOpacity(0.45),
-          fontSize: 12,
+          fontSize: 11.5,
         ),
-        prefixIcon: Icon(icon, color: AppColors.textMuted, size: 18),
+        prefixIcon: Icon(icon, color: AppColors.textMuted, size: 17),
         suffixIcon: isPassword
             ? IconButton(
                 icon: Icon(
@@ -626,31 +651,32 @@ class _LoginScreenState extends State<LoginScreen>
                       ? Icons.visibility_off_rounded
                       : Icons.visibility_rounded,
                   color: AppColors.textMuted,
-                  size: 18,
+                  size: 17,
                 ),
                 onPressed: onToggle,
               )
             : null,
         filled: true,
         fillColor: AppColors.background,
+        isDense: true,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(9),
           borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(9),
           borderSide: BorderSide(color: AppColors.border.withOpacity(0.5)),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(9),
           borderSide: const BorderSide(
             color: AppColors.primaryCyan,
             width: 1.5,
           ),
         ),
         contentPadding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 13,
+          horizontal: 13,
+          vertical: 12,
         ),
       ),
     );
@@ -659,28 +685,29 @@ class _LoginScreenState extends State<LoginScreen>
   Widget _buildFooter() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: AppColors.sidebar.withOpacity(0.7),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(11),
         border: Border.all(color: AppColors.border.withOpacity(0.5)),
       ),
       child: Column(
         children: [
           const Text(
             'Need access? Contact INNOVEXA63 Support',
-            style: TextStyle(color: AppColors.textMuted, fontSize: 10),
+            style: TextStyle(color: AppColors.textMuted, fontSize: 9.5),
           ),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          const SizedBox(height: 8),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 16,
+            runSpacing: 6,
             children: const [
               _ContactChip(
                 icon: Icons.phone_rounded,
-                label: '01777518241',
+                label: 'whatsapp : 01777518241',
                 color: AppColors.successGreen,
               ),
-              SizedBox(width: 20),
               _ContactChip(
                 icon: Icons.language_rounded,
                 label: 'innovexa63.com',
@@ -688,7 +715,7 @@ class _LoginScreenState extends State<LoginScreen>
               ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           const _ContactChip(
             icon: Icons.email_rounded,
             label: 'innovexa63@gmail.com',
@@ -713,11 +740,11 @@ class _LoginScreenState extends State<LoginScreen>
         ),
         const SizedBox(width: 5),
         const Text(
-          'ALL SYSTEMS OPERATIONAL  •  INNOVEXA63 v4.0',
+          'ALL SYSTEMS OPERATIONAL  •  INNOVEXA63 v2.0',
           style: TextStyle(
             color: AppColors.textMuted,
-            fontSize: 9,
-            letterSpacing: 0.6,
+            fontSize: 8.5,
+            letterSpacing: 0.5,
           ),
         ),
       ],
@@ -738,9 +765,9 @@ class _FieldLabel extends StatelessWidget {
     text,
     style: const TextStyle(
       color: AppColors.textMuted,
-      fontSize: 10,
+      fontSize: 9.5,
       fontWeight: FontWeight.bold,
-      letterSpacing: 0.8,
+      letterSpacing: 0.7,
     ),
   );
 }
@@ -760,13 +787,13 @@ class _ContactChip extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, color: color, size: 12),
+        Icon(icon, color: color, size: 11),
         const SizedBox(width: 5),
         Text(
           label,
           style: TextStyle(
             color: color,
-            fontSize: 10,
+            fontSize: 9.5,
             fontWeight: FontWeight.w500,
           ),
         ),
