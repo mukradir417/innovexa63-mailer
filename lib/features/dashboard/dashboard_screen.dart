@@ -5937,18 +5937,23 @@ class _DashboardScreenState extends State<DashboardScreen>
                           });
                         },
                         activeColor: AppColors.primaryCyan,
+                        // চেক বক্সের বর্ডারের রং ঠিক করতে চাইলে এখানে side ব্যবহার করতে পারেন:
+                        side: const BorderSide(color: Colors.white70),
                       ),
-                      const Text(
-                        'Use Human-Like Dynamic Delay (+1 to 3s)',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
+                      const Expanded(
+                        child: Text(
+                          'Use Human-Like Dynamic Delay (+1 to 3s)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Colors
+                                .white, // এখানে সাদা রঙ দেওয়া হয়েছে যাতে গাঢ় ব্যাকগ্রাউন্ডে দেখা যায়
+                          ),
                         ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 6),
-
                   // ── CONVERT API SETTINGS ───
                   const SizedBox(height: 6),
                   _sectionBox('CONVERT API TOKEN', AppColors.primaryCyan, [
