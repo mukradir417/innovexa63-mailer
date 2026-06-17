@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // <-- NEW IMPORT
+import 'dart:math'; // <-- NEW IMPORT
 import '../../core/app_colors.dart';
 import '../dashboard/dashboard_screen.dart';
 import '../admin/admin_dashboard.dart';
@@ -53,6 +55,21 @@ class _LoginScreenState extends State<LoginScreen>
     _userIdCtrl.dispose();
     _passwordCtrl.dispose();
     super.dispose();
+  }
+
+  // ================================================================
+  //  LOCAL DEVICE ID GENERATOR (NEW)
+  // ================================================================
+  Future<String> _getLocalDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    String? deviceId = prefs.getString('local_device_id');
+
+    if (deviceId == null) {
+      deviceId =
+          'device_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+      await prefs.setString('local_device_id', deviceId);
+    }
+    return deviceId;
   }
 
   // ================================================================
@@ -117,6 +134,67 @@ class _LoginScreenState extends State<LoginScreen>
         return;
       }
 
+      // ================================================================
+      // ── Step 3.5: SINGLE DEVICE LOGIN LOGIC (NEW) ──
+      // ================================================================
+      final String localDeviceId = await _getLocalDeviceId();
+      final String? activeDeviceId = data['current_device_id'];
+
+      // Check if logged in elsewhere
+      if (activeDeviceId != null &&
+          activeDeviceId != localDeviceId &&
+          activeDeviceId.isNotEmpty) {
+        bool? forceLogin = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.sidebar,
+            title: const Text(
+              'Already Logged In!',
+              style: TextStyle(color: AppColors.dangerRed),
+            ),
+            content: const Text(
+              'Your account is currently active on another device. Do you want to force log out from that device and log in here?',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  FirebaseAuth.instance.signOut(); // Cancel login
+                  Navigator.pop(ctx, false);
+                },
+                child: const Text(
+                  'CANCEL',
+                  style: TextStyle(color: AppColors.textMuted),
+                ),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.dangerRed,
+                ),
+                onPressed: () =>
+                    Navigator.pop(ctx, true), // Proceed to force login
+                child: const Text(
+                  'FORCE LOGIN',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        );
+
+        if (forceLogin != true) {
+          _setError('Login cancelled. Account active on another device.');
+          return; // Stop the login process
+        }
+      }
+
+      // Update Firestore with the new device ID
+      await FirebaseFirestore.instance.collection('users').doc(docId).set({
+        'current_device_id': localDeviceId,
+      }, SetOptions(merge: true));
+      // ================================================================
+
       final role = (data['role'] ?? 'user').toString().toLowerCase();
       final status = (data['status'] ?? 'active').toString().toLowerCase();
       final isAdmin =
@@ -157,7 +235,6 @@ class _LoginScreenState extends State<LoginScreen>
 
       // ── Step 7: Clear forceLogout flag if it was set ──
       if (data['forceLogout'] == true && isAdmin) {
-        // Admin এর forceLogout flag clear করে দাও
         await FirebaseFirestore.instance.collection('users').doc(docId).update({
           'forceLogout': false,
         });
@@ -206,14 +283,12 @@ class _LoginScreenState extends State<LoginScreen>
     } catch (e) {
       _setError('Error: $e');
     } finally {
-      // Ensuring UI state stops loading securely on the main thread
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) setState(() => _isLoading = false);
       });
     }
   }
 
-  // Helper method upgraded to execute strictly on the Main UI thread
   void _setError(String msg) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() => _errorMessage = msg);
@@ -231,10 +306,8 @@ class _LoginScreenState extends State<LoginScreen>
       backgroundColor: AppColors.background,
       body: Stack(
         children: [
-          // ── Grid background ──
           Positioned.fill(child: CustomPaint(painter: _GridPainter())),
 
-          // ── Cyan glow top-left ──
           Positioned(
             top: -160,
             left: -160,
@@ -245,7 +318,6 @@ class _LoginScreenState extends State<LoginScreen>
             ),
           ),
 
-          // ── Purple glow bottom-right ──
           Positioned(
             bottom: -130,
             right: -130,
@@ -256,7 +328,6 @@ class _LoginScreenState extends State<LoginScreen>
             ),
           ),
 
-          // ── Main content ──
           FadeTransition(
             opacity: _fadeAnim,
             child: SlideTransition(
@@ -292,7 +363,6 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Logo ──
   Widget _buildLogo() {
     return Column(
       children: [
@@ -358,7 +428,6 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Login card ──
   Widget _buildCard() {
     return Container(
       width: double.infinity,
@@ -387,7 +456,6 @@ class _LoginScreenState extends State<LoginScreen>
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Header
           Row(
             children: [
               Container(
@@ -420,7 +488,6 @@ class _LoginScreenState extends State<LoginScreen>
           ),
           const SizedBox(height: 20),
 
-          // User ID
           _FieldLabel('SYSTEM USER ID'),
           const SizedBox(height: 6),
           _buildTextField(
@@ -431,7 +498,6 @@ class _LoginScreenState extends State<LoginScreen>
           ),
           const SizedBox(height: 14),
 
-          // Password
           _FieldLabel('ACCESS PASSWORD'),
           const SizedBox(height: 6),
           _buildTextField(
@@ -445,7 +511,6 @@ class _LoginScreenState extends State<LoginScreen>
             onSubmit: (_) => _login(),
           ),
 
-          // Error message
           if (_errorMessage.isNotEmpty) ...[
             const SizedBox(height: 12),
             Container(
@@ -486,7 +551,6 @@ class _LoginScreenState extends State<LoginScreen>
 
           const SizedBox(height: 20),
 
-          // Login button
           SizedBox(
             width: double.infinity,
             height: 46,
@@ -534,7 +598,6 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Text field ──
   Widget _buildTextField({
     required TextEditingController controller,
     required String hint,
@@ -593,7 +656,6 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Footer ──
   Widget _buildFooter() {
     return Container(
       width: double.infinity,
@@ -637,7 +699,6 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ── Status bar ──
   Widget _buildStatusBar() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,

@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // <--- NEW: SharedPreferences Import করা হলো
 import 'package:mailer/mailer.dart';
 import 'package:mailer/smtp_server.dart';
 import '../auth/login_screen.dart';
@@ -35,7 +36,206 @@ class _DashboardScreenState extends State<DashboardScreen>
     with TickerProviderStateMixin {
   String proxyStatus = 'Disconnected'; // Initial status 'Disconnected' thakbe
   String proxyLocation = ''; // Proxy-r desh ebong shohor-er naam ekhane thakbe
+
+  // ==========================================
+  // ── NEW: নাম এবং প্ল্যান দেখানোর ভেরিয়েবল ──
+  // ==========================================
+  String _resolvedUserId = '—';
+  String _userPlan = '—';
+  DateTime? _userExpiryDate; // <--- এই নতুন লাইনটা অ্যাড করুন (মেয়াদের জন্য)
+  Timer? _countdownTimer; // <--- NEW: লাইভ ঘড়ির জন্য
+
   StreamSubscription<DocumentSnapshot>? _userStatusSub;
+  //সিসিটিভি ক্যামেরা
+  // ================================================================
+  //  NEW: SESSION TRACKING / FORCE LOGOUT VARIABLES
+  // ================================================================
+  StreamSubscription<DocumentSnapshot>?
+  _deviceListener; // আমাদের সিসিটিভি ক্যামেরা
+
+  @override
+  void initState() {
+    super.initState();
+    // ড্যাশবোর্ড ওপেন হওয়ার সাথে সাথেই লিসেনার ডিউটিতে বসে যাবে
+    _listenForForceLogout();
+
+    // ================================================================
+    // ── NEW: লাইভ কাউন্টডাউন টাইমার (প্রতি সেকেন্ডে টিক টিক করবে) ──
+    // ================================================================
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_userExpiryDate != null && mounted) {
+        setState(() {}); // এই লাইনটাই প্রতি সেকেন্ডে স্ক্রিন আপডেট করবে!
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    // ড্যাশবোর্ড থেকে বের হলে লিসেনারগুলো বন্ধ করে দিতে হবে
+    _deviceListener?.cancel();
+    _userStatusSub?.cancel();
+    _countdownTimer?.cancel(); // <--- NEW: ঘড়ি বন্ধ করা
+    super.dispose();
+  }
+
+  // (এর নিচে আর কোনো dispose() থাকবে না)
+  // ঠিক এইখানে আপনার ধাপ ৩ এর কোডটা পেস্ট করে দিন 👇
+
+  // এর নিচে আপনার অন্যান্য ফাংশন বা Widget build(...) শুরু হবে...
+  // ================================================================
+  //  LOCAL DEVICE ID GENERATOR
+  // ================================================================
+  Future<String> _getLocalDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    String? deviceId = prefs.getString('local_device_id');
+
+    if (deviceId == null) {
+      // যদি আগে থেকে আইডি না থাকে, তবে নতুন একটি আইডি বানিয়ে সেভ করবে
+      deviceId =
+          'device_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+      await prefs.setString('local_device_id', deviceId);
+    }
+    return deviceId;
+  }
+
+  // ================================================================
+  //  FORCE LOGOUT LISTENER (The Magic CCTV - WITH AUTO EXPIRY & UI UPDATE)
+  // ================================================================
+  void _listenForForceLogout() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final localDeviceId = await _getLocalDeviceId();
+
+    _deviceListener = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .snapshots()
+        .listen((snapshot) async {
+          if (snapshot.exists) {
+            final data = snapshot.data();
+
+            // ================================================================
+            // ── NEW: ডাটাবেস থেকে নাম, প্ল্যান এবং মেয়াদ এনে স্ক্রিনে আপডেট করা ──
+            // ================================================================
+            if (mounted) {
+              setState(() {
+                // ১. নাম আপডেট
+                _resolvedUserId =
+                    (data?['customUserId'] ?? data?['fullName'] ?? '—')
+                        .toString();
+
+                // ২. প্ল্যান আপডেট
+                _userPlan = (data?['plan'] ?? '—').toString();
+
+                // ৩. মেয়াদ (Expiry Date) আপডেট
+                if (data?['expiryDate'] != null) {
+                  _userExpiryDate = (data?['expiryDate'] as Timestamp).toDate();
+                } else {
+                  _userExpiryDate = null; // null মানে Lifetime
+                }
+              });
+            }
+            // ================================================================
+            // ================================================================
+
+            final activeDeviceId = data?['current_device_id'];
+            final isForceLogout = data?['forceLogout'] == true;
+
+            // ── NEW: Expiry Date রিয়েল-টাইম চেক ──
+            bool isExpired = false;
+            if (data?['expiryDate'] != null) {
+              final expiry = (data?['expiryDate'] as Timestamp).toDate();
+              if (expiry.isBefore(DateTime.now())) {
+                isExpired = true; // সময় পার হয়ে গেছে!
+              }
+            }
+
+            // চেক ১: অন্য ডিভাইস থেকে লগইন
+            if (activeDeviceId != null &&
+                activeDeviceId != localDeviceId &&
+                activeDeviceId.isNotEmpty) {
+              _deviceListener?.cancel();
+              await FirebaseAuth.instance.signOut();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Session Terminated! Logged in from another device.',
+                    ),
+                    backgroundColor: AppColors.dangerRed,
+                  ),
+                );
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  (route) => false,
+                );
+              }
+            }
+            // চেক ২: অ্যাডমিন ঘাড় ধাক্কা দিলে (Force Logout)
+            else if (isForceLogout) {
+              _deviceListener?.cancel();
+              await FirebaseAuth.instance.signOut();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Session Terminated by Admin!'),
+                    backgroundColor: AppColors.dangerRed,
+                  ),
+                );
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  (route) => false,
+                );
+              }
+            }
+            // ── চেক ৩: মেয়াদ শেষ হলে সাথে সাথে অটো-লগআউট ──
+            else if (isExpired) {
+              _deviceListener?.cancel();
+              await FirebaseAuth.instance.signOut();
+
+              // ডাটাবেসে স্ট্যাটাসও ব্লকড করে দেওয়া হলো
+              await FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(uid)
+                  .update({'status': 'blocked'});
+
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('LICENSE EXPIRED! You have been logged out.'),
+                    backgroundColor: AppColors.dangerRed,
+                    duration: Duration(seconds: 5),
+                  ),
+                );
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  (route) => false,
+                );
+              }
+            }
+          }
+        });
+  }
+
+  // ================================================================
+  //  USER-AGENT / DEVICE ROTATION LOGIC
+  // ================================================================
+  final List<String> _deviceAgents = [
+    "AppleMail/2.3624.32.5.1.3 (Mac OS X Version 14.5)",
+    "Microsoft Outlook 16.0.16924.20106",
+    "iPhone Mail (18E212)",
+    "iPad Mail (18E212)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Thunderbird/115.6.0",
+    "Samsung Email/6.1.91 (Android 14)",
+    "Gmail/10.11.1 (Android 13)",
+  ];
+
+  // এই ফাংশনটি কল করলেই সে লিস্ট থেকে যেকোনো একটা রেন্ডম ডিভাইস সিলেক্ট করে দেবে
+  String _getRandomDeviceAgent() {
+    final random = Random();
+    return _deviceAgents[random.nextInt(_deviceAgents.length)];
+  }
 
   // ── Tasks ── Each task is fully independent
   final List<_MailTask> _tasks = [_MailTask(id: 1)];
@@ -62,11 +262,9 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   // ── License info ──
   Map<String, dynamic> _userData = {};
-  String _resolvedUserId = '';
   String _displayName = '';
 
   // ── Countdown timer ──
-  Timer? _countdownTimer;
   Duration _timeRemaining = Duration.zero;
 
   final _ipInputCtrl = TextEditingController();
@@ -78,23 +276,6 @@ class _DashboardScreenState extends State<DashboardScreen>
   int get _totalPending => _task.totalPending;
   bool get _isSending => _task.isSending;
   bool get _isPaused => _task.isPaused;
-
-  @override
-  void initState() {
-    super.initState();
-    _startLiveSecurityCheck();
-  }
-
-  @override
-  void dispose() {
-    _userStatusSub?.cancel();
-    _countdownTimer?.cancel();
-    _ipInputCtrl.dispose();
-    for (final t in _tasks) {
-      t.dispose();
-    }
-    super.dispose();
-  }
 
   // ================================================================
   //  LIVE PROXY TESTER & GEOLOCATION FETCH (HTTP & SOCKS5 SUPPORT)
@@ -232,10 +413,24 @@ class _DashboardScreenState extends State<DashboardScreen>
           final data = doc.data() as Map<String, dynamic>;
           if (mounted) {
             setState(() {
+              // ── আপনার অরিজিনাল কোড (একদম অক্ষত আছে) ──
               _userData = data;
               _displayName = (data['fullName'] ?? '').toString().isNotEmpty
                   ? data['fullName']
                   : (data['customUserId'] ?? docId).toString();
+
+              // ==========================================================
+              // ── NEW UPGRADE: জাস্ট এই ভেরিয়েবলগুলো অ্যাড করা হলো ──
+              // ==========================================================
+              _resolvedUserId = _displayName; // নাম সাথে সাথে আপডেট হবে
+              _userPlan = (data['plan'] ?? '—')
+                  .toString(); // প্ল্যান সাথে সাথে আপডেট হবে
+              if (data['expiryDate'] != null) {
+                _userExpiryDate = (data['expiryDate'] as Timestamp).toDate();
+              } else {
+                _userExpiryDate = null;
+              }
+              // ==========================================================
             });
             _startCountdownTimer(data);
           }
@@ -281,18 +476,28 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
   }
 
+  // ================================================================
+  // ── NEW: সেকেন্ডসহ রিয়েল-টাইম ডিজিটাল ঘড়ি ফরম্যাট ──
+  // ================================================================
   String _formatCountdown(Duration d) {
     if (d == Duration.zero && _userData['expiryDate'] == null) {
       return 'Lifetime';
     }
     if (d == Duration.zero) return 'EXPIRED';
-    if (d.inDays > 0) {
-      return '${d.inDays}d ${d.inHours % 24}h ${d.inMinutes % 60}m';
+
+    int days = d.inDays;
+    int hours = d.inHours % 24;
+    int minutes = d.inMinutes % 60;
+    int seconds = d.inSeconds % 60; // সেকেন্ড বের করা হলো
+
+    // ১ দিনের বেশি সময় থাকলেও এখন সেকেন্ড টিক টিক করবে
+    if (days > 0) {
+      return '${days}d ${hours.toString().padLeft(2, '0')}h ${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
     }
-    if (d.inHours > 0) {
-      return '${d.inHours}h ${d.inMinutes % 60}m ${d.inSeconds % 60}s';
+    if (hours > 0) {
+      return '${hours.toString().padLeft(2, '0')}h ${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
     }
-    return '${d.inMinutes}m ${d.inSeconds % 60}s';
+    return '${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
   }
 
   Future<void> _forceLogout(String reason) async {
@@ -302,6 +507,14 @@ class _DashboardScreenState extends State<DashboardScreen>
     for (final t in _tasks) {
       t.isSending = false;
       t.isPaused = false;
+    }
+    // ১. প্রথমে কারেন্ট ইউজারের UID-টা বের করে নেওয়া হচ্ছে
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      // ২. লগআউট হওয়ার ঠিক ১ সেকেন্ড আগে ডাটাবেস থেকে ডিভাইস আইডি মুছে ফাঁকা ('') করা হলো
+      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+        'current_device_id': '', // আইডি ক্লিয়ার করে দিলাম
+      });
     }
     await FirebaseAuth.instance.signOut();
     if (mounted) {
@@ -365,17 +578,38 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  LICENSE BANNER
+  //  LICENSE BANNER (EXPIRED BUG FIXED 100%)
   // ================================================================
   Widget _buildLicenseBanner() {
-    final plan = _userData['plan'] ?? '—';
-    final hasExpiry = _userData['expiryDate'] != null;
-    final isExpired = hasExpiry && _timeRemaining == Duration.zero;
+    final plan = _userPlan;
+    final hasExpiry = _userExpiryDate != null;
+
+    // ================================================================
+    // ── HOT FIX: কোনো ভেরিয়েবলের জন্য ওয়েট না করে সরাসরি লাইভ টাইম হিসাব ──
+    // ================================================================
+    Duration liveTimeRemaining = Duration.zero;
+    if (hasExpiry) {
+      liveTimeRemaining = _userExpiryDate!.difference(DateTime.now());
+      if (liveTimeRemaining.isNegative) {
+        liveTimeRemaining = Duration.zero;
+      }
+    }
+
+    final isExpired = hasExpiry && liveTimeRemaining.inSeconds <= 0;
     Color bannerColor = AppColors.successGreen;
+
     if (isExpired) {
       bannerColor = AppColors.dangerRed;
-    } else if (hasExpiry && _timeRemaining.inDays < 7)
+    } else if (hasExpiry && liveTimeRemaining.inDays < 7) {
       bannerColor = AppColors.warning;
+    }
+
+    String expiryText = 'Lifetime';
+    if (isExpired) {
+      expiryText = 'EXPIRED';
+    } else if (hasExpiry) {
+      expiryText = _formatCountdown(liveTimeRemaining);
+    }
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
@@ -394,7 +628,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           ),
           const SizedBox(width: 4),
           Text(
-            _displayName.isNotEmpty ? _displayName : '—',
+            _resolvedUserId.isNotEmpty ? _resolvedUserId : '—',
             style: const TextStyle(
               color: AppColors.primaryCyan,
               fontSize: 10,
@@ -416,7 +650,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           Icon(Icons.timer_rounded, color: bannerColor, size: 13),
           const SizedBox(width: 4),
           Text(
-            _formatCountdown(_timeRemaining),
+            expiryText,
             style: TextStyle(
               color: bannerColor,
               fontSize: 10,
@@ -462,7 +696,6 @@ class _DashboardScreenState extends State<DashboardScreen>
       ],
     ),
   );
-
   // ================================================================
   //  TASK MANAGEMENT
   // ================================================================
@@ -741,7 +974,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  SMTP TEST CONNECTION
+  //  SMTP TEST CONNECTION (WITH DEVICE ROTATION)
   // ================================================================
   Future<void> _testSmtpConnection(_MailTask task) async {
     if (!_validateSmtp(task)) return;
@@ -756,6 +989,21 @@ class _DashboardScreenState extends State<DashboardScreen>
         ..recipients.add(task.emailCtrl.text.trim())
         ..subject = 'SMTP Test — INNOVEXA63'
         ..text = 'SMTP connection test successful!';
+
+      // ================================================================
+      // ── NEW: DEVICE AGENT ROTATION (INBOX BOOST) LOGIC ──
+      // ================================================================
+      // ইউজার যদি টাস্কের ভেতর রোটেশন অন রাখে, তবেই এই হেডারগুলো যুক্ত হবে
+      if (task.deviceAgentRotation) {
+        String selectedDevice = _getRandomDeviceAgent();
+        testMsg.headers = {
+          'User-Agent': selectedDevice,
+          'X-Mailer': selectedDevice,
+        };
+        debugPrint('Device Rotation Active: Testing as $selectedDevice');
+      }
+      // ================================================================
+
       final conn = PersistentConnection(server);
       await conn.send(testMsg);
       await conn.close();
@@ -805,12 +1053,29 @@ class _DashboardScreenState extends State<DashboardScreen>
           ? altBody
           : 'Please view this email in an HTML-compatible client.';
 
+      // ================================================================
+      // ── NEW: DEVICE AGENT ROTATION (INBOX BOOST) LOGIC ──
+      // ================================================================
+      String deviceHeaders = ""; // ডিফল্টভাবে ফাঁকা থাকবে
+      if (task.deviceAgentRotation) {
+        String selectedDevice = _getRandomDeviceAgent();
+        // ইউজার অপশন অন রাখলে ডিভাইসের নাম ইমেইলের হেডারের জন্য তৈরি হবে
+        deviceHeaders =
+            "User-Agent: $selectedDevice\n"
+            "X-Mailer: $selectedDevice\n";
+        debugPrint(
+          'Google API Device Rotation Active: Sending as $selectedDevice',
+        );
+      }
+      // ================================================================
+
       // Multipart/Alternative ফরম্যাটে ইমেইল বডি তৈরি
       String rawEmail =
           "From: $fromDisplay <${credentials.email}>\n"
           "To: $toEmail\n"
           "Subject: $subject\n"
           "MIME-Version: 1.0\n"
+          "$deviceHeaders" // <--- ম্যাজিক হেডারটি ঠিক এখানে ইনজেক্ট করা হলো
           "Content-Type: multipart/alternative; boundary=\"$boundary\"\n\n"
           "--$boundary\n"
           "Content-Type: text/plain; charset=utf-8\n\n"
@@ -833,7 +1098,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  SEND ONE EMAIL
+  //  SEND ONE EMAIL (WITH DEVICE AGENT ROTATION)
   // ================================================================
   Future<bool> _sendOneEmail({
     required _MailTask task,
@@ -851,7 +1116,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         toName: toName,
         subject: subject,
         body: body,
-        altBody: altBody, // <--- শুধু এই লাইনটা অ্যাড হবে
+        altBody: altBody,
         fromDisplay: fromDisplay,
       );
     }
@@ -892,15 +1157,31 @@ class _DashboardScreenState extends State<DashboardScreen>
           if (File(path).existsSync()) {
             String? dynamicFileName;
 
-            // যদি ইউজার রিনেম অপশনটি চালু রাখে
-            if (task.renameAttachmentByEmail) {
-              // "john.doe@gmail.com" থেকে শুধু "john.doe" বের করবে
-              String prefix = toEmail.split('@').first;
-              String ext = path
-                  .split('.')
-                  .last; // ফাইলের এক্সটেনশন (যেমন pdf, jpg)
+            // ==========================================
+            // ── NEW: রেন্ডম নাম এবং ইমেইল নামের ম্যাজিক লজিক ──
+            // ==========================================
 
-              // যদি একের বেশি ফাইল থাকে তবে নামের শেষে _1, _2 বসাবে
+            // অপশন ১: রেন্ডম নাম (FILE_X9K.pdf)
+            if (task.renameAttachmentRandomly) {
+              const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+              final rnd = Random();
+              final randomStr = List.generate(
+                8,
+                (_) => chars[rnd.nextInt(chars.length)],
+              ).join();
+              String ext = path.split('.').last;
+
+              if (task.attachmentPaths.length > 1) {
+                dynamicFileName = 'FILE_${randomStr}_${j + 1}.$ext';
+              } else {
+                dynamicFileName = 'FILE_$randomStr.$ext';
+              }
+            }
+            // অপশন ২: ইমেইল অনুযায়ী নাম (john.doe.pdf)
+            else if (task.renameAttachmentByEmail) {
+              String prefix = toEmail.split('@').first;
+              String ext = path.split('.').last;
+
               if (task.attachmentPaths.length > 1) {
                 dynamicFileName = '${prefix}_${j + 1}.$ext';
               } else {
@@ -915,6 +1196,22 @@ class _DashboardScreenState extends State<DashboardScreen>
           }
         }
       }
+
+      // ================================================================
+      // ── NEW: DEVICE AGENT ROTATION (INBOX BOOST) LOGIC ──
+      // ================================================================
+      if (task.deviceAgentRotation) {
+        String selectedDevice = _getRandomDeviceAgent();
+        // SMTP Message এর হেডারে রেন্ডম ডিভাইস যুক্ত করা হলো
+        msg.headers['User-Agent'] = selectedDevice;
+        msg.headers['X-Mailer'] = selectedDevice;
+
+        debugPrint(
+          'SMTP Device Rotation: Sending to $toEmail as $selectedDevice',
+        );
+      }
+      // ================================================================
+
       if (task.headers['Priority'] ?? false) {
         msg.headers['X-Priority'] = '1';
         msg.headers['X-MSMail-Priority'] = 'High';
@@ -2711,6 +3008,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     bool pcBypass = t.pcProtectionBypass;
     String macAddr = t.macAddress;
     final domainCtrl = TextEditingController(text: t.mixedDomains.join(', '));
+    // নতুন ভেরিয়েবল: পপ-আপের ভেতরে সুইচের স্টেট ধরে রাখার জন্য
+    bool deviceAgentRotation = t.deviceAgentRotation;
 
     showDialog(
       context: context,
@@ -2806,7 +3105,24 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ],
                     ],
                   ),
+
+                  // ── DEVICE AGENT ROTATION SWITCH (FIXED) ──
+                  Row(
+                    children: [
+                      const Text(
+                        'Device Agent Rotation (Inbox Boost)',
+                        style: TextStyle(color: Colors.white, fontSize: 11),
+                      ),
+                      const Spacer(),
+                      Switch(
+                        value: deviceAgentRotation,
+                        activeThumbColor: AppColors.successGreen,
+                        onChanged: (v) => setS(() => deviceAgentRotation = v),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 8),
+
                   _inboxSection('MAC ADDRESS SPOOFER', AppColors.warning, [
                     Row(
                       children: [
@@ -2870,6 +3186,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                     ],
                   ]),
+
                   const SizedBox(height: 16),
                   Align(
                     alignment: Alignment.centerRight,
@@ -2887,6 +3204,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                           t.domainMixEnabled = domainMix;
                           t.pcProtectionBypass = pcBypass;
                           t.macAddress = macAddr;
+                          t.deviceAgentRotation =
+                              deviceAgentRotation; // নতুন ভ্যালু সেভ করা হলো
                           t.mixedDomains = domainCtrl.text
                               .split(',')
                               .map((d) => d.trim())
@@ -5528,6 +5847,33 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                     ],
                   ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Flexible(
+                        child: Text(
+                          'Random Name (FILE_X9K.pdf):',
+                          style: TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 9,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Transform.scale(
+                        scale: 0.7,
+                        child: Switch(
+                          value: task.renameAttachmentRandomly,
+                          activeThumbColor: AppColors.primaryCyan,
+                          onChanged: (v) => setState(() {
+                            task.renameAttachmentRandomly = v;
+                            // এটা অন করলে ইমেইলটা অটোমেটিক অফ হয়ে যাবে
+                            if (v) task.renameAttachmentByEmail = false;
+                          }),
+                        ),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 6),
 
                   // ── CONVERT API SETTINGS ───
@@ -6378,6 +6724,7 @@ class _MailTask {
   List<String> bodyList = [];
 
   // ── Per-task settings ──
+  bool deviceAgentRotation = false;
   bool macSpoofEnabled = false;
   bool domainMixEnabled = false;
   bool pcProtectionBypass = false;
@@ -6394,6 +6741,7 @@ class _MailTask {
   List<String> attachmentPaths = [];
   List<String> attachmentNames = [];
   bool renameAttachmentByEmail = false; // <-- নতুন অপশন
+  bool renameAttachmentRandomly = false; // <--- এই নতুন লাইনটা অ্যাড করুন
   String? convertTargetFormat; // কনভার্ট করার ফরম্যাটটি এখানে সেভ থাকবে
 
   // ── Per-task recipients ──

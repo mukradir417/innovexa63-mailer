@@ -1764,9 +1764,16 @@ class _UserManagementPageState extends State<_UserManagementPage> {
       return;
     }
     final ns = current.toLowerCase() == 'active' ? 'blocked' : 'active';
+
+    // ================================================================
+    // ── NEW: অ্যাডমিন ব্লক করলে সাথে সাথে রানিং সেশন থেকেও কিক আউট হবে ──
+    // ================================================================
     await FirebaseFirestore.instance.collection('users').doc(uid).update({
       'status': ns,
+      'forceLogout': ns == 'blocked' ? true : false, // <--- ম্যাজিক লাইন!
     });
+    // ================================================================
+
     await _writeLog(
       action: 'Status changed for: $uid → ${ns.toUpperCase()}',
       type: 'user_management',
