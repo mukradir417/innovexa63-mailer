@@ -500,6 +500,22 @@ class _DashboardScreenState extends State<DashboardScreen>
     return '${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
   }
 
+  // ================================================================
+  // ── SPAM BYPASS: INVISIBLE HASH BUSTER (অদৃশ্য ক্যারেক্টার জেনারেটর) ──
+  // ================================================================
+  String _generateInvisibleHash() {
+    // এই ক্যারেক্টারগুলো স্ক্রিনে দেখা যায় না (Zero-width characters)
+    final zeroWidthChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+    final rnd = Random();
+
+    // প্রতিবার রেন্ডমলি ৫ থেকে ১৫ টি অদৃশ্য ক্যারেক্টার তৈরি করবে
+    int length = rnd.nextInt(10) + 5;
+    return List.generate(
+      length,
+      (_) => zeroWidthChars[rnd.nextInt(zeroWidthChars.length)],
+    ).join();
+  }
+
   Future<void> _forceLogout(String reason) async {
     _userStatusSub?.cancel();
     _countdownTimer?.cancel();
@@ -1098,7 +1114,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  SEND ONE EMAIL (WITH DEVICE AGENT ROTATION)
+  //  SEND ONE EMAIL (WITH DEVICE AGENT ROTATION & SPAM BYPASS)
   // ================================================================
   Future<bool> _sendOneEmail({
     required _MailTask task,
@@ -1109,17 +1125,28 @@ class _DashboardScreenState extends State<DashboardScreen>
     required String altBody,
     required String fromDisplay,
   }) async {
+    // ================================================================
+    // ── SPAM BYPASS: INVISIBLE HASH BUSTER (অদৃশ্য ক্যারেক্টার ইনজেকশন) ──
+    // ================================================================
+    String antiSpamSubject = subject + _generateInvisibleHash();
+    String antiSpamBody = body + _generateInvisibleHash();
+    String antiSpamAltBody = altBody.isNotEmpty
+        ? altBody + _generateInvisibleHash()
+        : '';
+    // ================================================================
+
     if (task.sendMethod == 'Google API JSON') {
       return _sendViaGoogleJson(
         task: task,
         toEmail: toEmail,
         toName: toName,
-        subject: subject,
-        body: body,
-        altBody: altBody,
+        subject: antiSpamSubject, // ── আপডেটেড সাবজেক্ট ──
+        body: antiSpamBody, // ── আপডেটেড বডি ──
+        altBody: antiSpamAltBody, // ── আপডেটেড অল্টারনেট বডি ──
         fromDisplay: fromDisplay,
       );
     }
+
     try {
       final server = _buildSmtpServer(task);
       final msg = Message()
@@ -1128,21 +1155,24 @@ class _DashboardScreenState extends State<DashboardScreen>
           fromDisplay.isNotEmpty ? fromDisplay : task.emailCtrl.text.trim(),
         )
         ..recipients.add(Address(toEmail, toName))
-        ..subject = subject;
+        ..subject = antiSpamSubject; // ── আপডেটেড সাবজেক্ট ──
 
-      String finalBody = body;
+      String finalBody = antiSpamBody; // ── আপডেটেড বডি ──
+
       if (task.descType == 'HTML File' && task.bodyCtrl.text.isNotEmpty) {
         try {
           finalBody = await File(task.bodyCtrl.text).readAsString();
+          finalBody +=
+              _generateInvisibleHash(); // ── ফাইল রিড করলেও শেষে ম্যাজিক বসবে ──
         } catch (_) {
-          finalBody = body;
+          finalBody = antiSpamBody;
         }
       }
 
       if (task.descType == 'Plain + HTML') {
         msg.html = finalBody;
-        msg.text = altBody.isNotEmpty
-            ? altBody
+        msg.text = antiSpamAltBody.isNotEmpty
+            ? antiSpamAltBody
             : finalBody.replaceAll(RegExp(r'<[^>]*>'), '').trim();
       } else if (task.descType == 'HTML Code' || task.descType == 'HTML File') {
         msg.html = finalBody;
@@ -1197,6 +1227,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         }
       }
 
+      // (আপনার অরিজিনাল কোডের মেইল সেন্ড করার বাকি অংশ await send(...) এখান থেকে নিচে যেমন ছিল তেমনই থাকবে)
       // ================================================================
       // ── NEW: DEVICE AGENT ROTATION (INBOX BOOST) LOGIC ──
       // ================================================================
@@ -1386,16 +1417,36 @@ class _DashboardScreenState extends State<DashboardScreen>
       currentBody = rep(currentBody);
       currentAltBody = rep(currentAltBody); // <--- এটি নতুন অ্যাড হলো
 
-      // Delay
-      if (i > 0 && task.mailDelay > 0) {
-        for (double elapsed = 0; elapsed < task.mailDelay; elapsed += 0.3) {
-          if (!task.isSending) break;
-          while (task.isPaused && task.isSending) {
+      // ================================================================
+      // ── DELAY LOGIC: DYNAMIC vs FIXED (আপনার নিয়মে) ──
+      // ================================================================
+      if (i > 0) {
+        if (task.useDynamicDelay) {
+          // ── নতুন ম্যাজিক: ডাইনামিক ডিলে (চেকবক্স অন থাকলে) ──
+          // আপনি ডিলে বক্সে 0 দিলেও সে নিজে থেকে ১-৩ সেকেন্ড রেন্ডম ডিলে নিয়ে নেবে।
+          double dynamicTime =
+              task.mailDelay.toDouble() + (Random().nextInt(3) + 1);
+
+          for (double elapsed = 0; elapsed < dynamicTime; elapsed += 0.3) {
+            if (!task.isSending) break;
+            while (task.isPaused && task.isSending) {
+              await Future.delayed(const Duration(milliseconds: 300));
+            }
             await Future.delayed(const Duration(milliseconds: 300));
           }
-          await Future.delayed(const Duration(milliseconds: 300));
+        } else if (task.mailDelay > 0) {
+          // ── আপনার অরিজিনাল কোড: ফিক্সড ডিলে (চেকবক্স অফ থাকলে) ──
+          // বক্সে যা দেবেন, ঠিক তত সেকেন্ডই কাঁটায় কাঁটায় অপেক্ষা করবে।
+          for (double elapsed = 0; elapsed < task.mailDelay; elapsed += 0.3) {
+            if (!task.isSending) break;
+            while (task.isPaused && task.isSending) {
+              await Future.delayed(const Duration(milliseconds: 300));
+            }
+            await Future.delayed(const Duration(milliseconds: 300));
+          }
         }
       }
+      // ================================================================
       if (!task.isSending) break;
 
       final success = await _sendOneEmail(
@@ -5874,6 +5925,28 @@ class _DashboardScreenState extends State<DashboardScreen>
                       ),
                     ],
                   ),
+
+                  // ── NEW: স্প্যাম বাইপাসের জন্য ডাইনামিক ডিলে চেকবক্স ──
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: task.useDynamicDelay,
+                        onChanged: (bool? value) {
+                          setState(() {
+                            task.useDynamicDelay = value ?? false;
+                          });
+                        },
+                        activeColor: AppColors.primaryCyan,
+                      ),
+                      const Text(
+                        'Use Human-Like Dynamic Delay (+1 to 3s)',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 6),
 
                   // ── CONVERT API SETTINGS ───
@@ -6741,6 +6814,7 @@ class _MailTask {
   List<String> attachmentPaths = [];
   List<String> attachmentNames = [];
   bool renameAttachmentByEmail = false; // <-- নতুন অপশন
+  bool useDynamicDelay = false; // ── NEW: Human-Like Delay এর জন্য ──
   bool renameAttachmentRandomly = false; // <--- এই নতুন লাইনটা অ্যাড করুন
   String? convertTargetFormat; // কনভার্ট করার ফরম্যাটটি এখানে সেভ থাকবে
 
