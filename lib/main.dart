@@ -11,6 +11,14 @@ import '../features/admin/admin_dashboard.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // ================================================================
+  // 🔥 NEW SECURITY UPGRADE: Force logout every time app starts
+  // This ensures that if the app is closed or PC shuts down,
+  // the user MUST log in again with their password.
+  // ================================================================
+  await FirebaseAuth.instance.signOut();
+
   runApp(const PremiumMailerApp());
 }
 

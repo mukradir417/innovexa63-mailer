@@ -2763,8 +2763,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                                 onPressed: () => setS(
                                   () => setState(() {
                                     _ipList.removeAt(i);
-                                    if (_currentIpIndex >= _ipList.length)
+                                    if (_currentIpIndex >= _ipList.length) {
                                       _currentIpIndex = 0;
+                                    }
                                   }),
                                 ),
                                 icon: const Icon(

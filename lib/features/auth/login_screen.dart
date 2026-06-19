@@ -55,6 +55,23 @@ class _LoginScreenState extends State<LoginScreen>
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut));
     _animCtrl.forward();
+
+    // ── NEW: Load saved User ID when screen opens ──
+    _loadSavedUserId();
+  }
+
+  // ================================================================
+  //  LOAD SAVED USER ID LOGIC (NEW)
+  // ================================================================
+  Future<void> _loadSavedUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedUserId = prefs.getString('saved_user_id') ?? '';
+
+    if (savedUserId.isNotEmpty && mounted) {
+      setState(() {
+        _userIdCtrl.text = savedUserId;
+      });
+    }
   }
 
   @override
@@ -66,7 +83,7 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   // ================================================================
-  //  LOCAL DEVICE ID GENERATOR (NEW)
+  //  LOCAL DEVICE ID GENERATOR
   // ================================================================
   Future<String> _getLocalDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
@@ -143,7 +160,7 @@ class _LoginScreenState extends State<LoginScreen>
       }
 
       // ================================================================
-      // ── Step 3.5: SINGLE DEVICE LOGIN LOGIC (NEW) ──
+      // ── Step 3.5: SINGLE DEVICE LOGIN LOGIC ──
       // ================================================================
       final String localDeviceId = await _getLocalDeviceId();
       final String? activeDeviceId = data['current_device_id'];
@@ -259,6 +276,11 @@ class _LoginScreenState extends State<LoginScreen>
         'ipAddress': '',
         'timestamp': FieldValue.serverTimestamp(),
       });
+
+      // ── NEW: Save User ID on successful login ──
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('saved_user_id', userId);
+      // ───────────────────────────────────────────
 
       if (!mounted) return;
 

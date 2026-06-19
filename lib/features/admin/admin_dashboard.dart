@@ -2263,7 +2263,7 @@ class _UserManagementPageState extends State<_UserManagementPage> {
 //  LICENSE MANAGER PAGE
 // ================================================================
 class _LicenseManagerPage extends StatefulWidget {
-  const _LicenseManagerPage({super.key});
+  const _LicenseManagerPage();
   @override
   State<_LicenseManagerPage> createState() => _LicenseManagerPageState();
 }
