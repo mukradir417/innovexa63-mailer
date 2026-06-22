@@ -516,6 +516,28 @@ class _DashboardScreenState extends State<DashboardScreen>
     ).join();
   }
 
+  // ================================================================
+  // ── SPAM BYPASS: SPINTAX (TEXT SPINNER) LOGIC ──
+  // ================================================================
+  String _applySpintax(String text) {
+    // এই রেজেক্সটি শুধুমাত্র {...} এর ভেতরের টেক্সট খুঁজবে
+    final RegExp spintaxRegex = RegExp(r'\{([^{}]+)\}');
+
+    return text.replaceAllMapped(spintaxRegex, (Match match) {
+      String content = match.group(1) ?? '';
+
+      // যদি এর ভেতরে '|' (দাঁড়ি) থাকে, তবেই এটা Spintax হিসেবে কাজ করবে!
+      if (content.contains('|')) {
+        List<String> options = content.split('|');
+        // রেন্ডমলি যেকোনো একটা শব্দ বা লাইন বেছে নেবে
+        return options[Random().nextInt(options.length)];
+      }
+
+      // আর যদি '|' না থাকে (যেমন {name}, {email}), তবে সেটাকে আগের মতোই রেখে দেবে
+      return match.group(0)!;
+    });
+  }
+
   Future<void> _forceLogout(String reason) async {
     _userStatusSub?.cancel();
     _countdownTimer?.cancel();
@@ -554,41 +576,77 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  GOOGLE API AUTHENTICATION (Direct Service Account)
+  //  GOOGLE API JSON AUTHENTICATION (OAuth 2.0)
   // ================================================================
   void _authenticateGoogle(_MailTask task) async {
-    if (task.googleJsonPath.isEmpty) {
-      _showSnack(
-        context,
-        'Please select a Google credentials.json file!',
-        AppColors.dangerRed,
-      );
-      return;
-    }
-
-    _showSnack(context, 'Authenticating with Google API...', AppColors.warning);
     try {
-      final jsonString = await File(task.googleJsonPath).readAsString();
-      final credentials = auth.ServiceAccountCredentials.fromJson(jsonString);
+      if (task.googleJsonPath.isEmpty) {
+        _showSnack(
+          context,
+          'Please select an OAuth 2.0 JSON file first!',
+          Colors.red,
+        );
+        return;
+      }
 
-      // ডিরেক্ট অথেনটিকেশন (Impersonation ছাড়া)
-      final client = await auth.clientViaServiceAccount(credentials, [
-        gmail.GmailApi.mailGoogleComScope,
-      ]);
+      _showSnack(context, 'Opening browser for authentication...', Colors.blue);
 
-      setState(() => task.googleApiToken = 'REAL-AUTH-SUCCESS');
-      client.close();
-      _showSnack(
-        context,
-        '✓ Google API Authenticated Successfully!',
-        AppColors.successGreen,
+      final jsonStr = await File(task.googleJsonPath).readAsString();
+      final Map<String, dynamic> jsonData = jsonDecode(jsonStr);
+
+      final clientData = jsonData['installed'] ?? jsonData['web'];
+      if (clientData == null) {
+        _showSnack(
+          context,
+          'Invalid JSON! Please use OAuth 2.0 Client ID JSON.',
+          Colors.red,
+        );
+        return;
+      }
+
+      final clientId = auth.ClientId(
+        clientData['client_id'],
+        clientData['client_secret'],
       );
+
+      final client = await auth.clientViaUserConsent(
+        clientId,
+        [gmail.GmailApi.mailGoogleComScope],
+        (String url) async {
+          // ==========================================
+          // 🚀 NEW: ডাইরেক্ট পাসওয়ার্ড পেজে যাওয়ার ট্রিক (login_hint)
+          // ==========================================
+          String userEmail = task.emailCtrl.text.trim();
+
+          String finalUrl = url;
+          if (userEmail.isNotEmpty) {
+            finalUrl = "$url&login_hint=$userEmail";
+          }
+
+          await Process.run('powershell', [
+            '-NoProfile',
+            '-Command',
+            'Start-Process \'$finalUrl\'',
+          ]);
+        },
+      );
+
+      // 🚀 FIXED FOR MULTITASKING: ক্লায়েন্টকে ডাইরেক্ট ইউনিক task অবজেক্ট দিয়ে সেভ করা হলো
+      _activeGoogleClients[task] = client;
+
+      final gmailApi = gmail.GmailApi(client);
+      final profile = await gmailApi.users.getProfile('me');
+      final email = profile.emailAddress ?? "Unknown";
+
+      setState(() {});
+
+      _showSnack(context, 'Successfully Authenticated as $email', Colors.green);
     } catch (e) {
-      setState(() => task.googleApiToken = '');
+      debugPrint("Google Auth Error: $e");
       _showSnack(
         context,
-        'Auth Failed: Invalid or Expired JSON file!',
-        AppColors.dangerRed,
+        'Authentication Failed! Check your JSON.',
+        Colors.red,
       );
     }
   }
@@ -905,6 +963,94 @@ class _DashboardScreenState extends State<DashboardScreen>
   // ================================================================
   //  SMTP VALIDATION
   // ================================================================
+  // ================================================================
+  // ── SENDER ROTATION: VERIFY & ADD ACCOUNT ──
+  // ================================================================
+  Future<void> _verifyAndAddAccount(_MailTask task) async {
+    if (!_validateSmtp(task)) return; // আগে চেক করবে বক্সগুলো ঠিক আছে কি না
+
+    setState(() => task.isAddingAccount = true);
+    bool isSuccess = false;
+    auth.AutoRefreshingAuthClient? savedClient;
+
+    try {
+      if (task.sendMethod == 'SMTP (Gmail)' ||
+          task.sendMethod == 'Custom SMTP') {
+        // ১. SMTP টেস্ট কানেকশন
+        final server = _buildSmtpServer(task);
+        final conn = PersistentConnection(server);
+        final testMsg = Message()
+          ..from = Address(task.emailCtrl.text.trim(), 'Test')
+          ..recipients.add(task.emailCtrl.text.trim())
+          ..subject = 'Ping'
+          ..text = 'Ping';
+        await conn.send(testMsg);
+        await conn.close();
+        isSuccess = true;
+      } else if (task.sendMethod == 'Google API JSON') {
+        // ২. JSON টেস্ট
+        if (_activeGoogleClients.containsKey(task)) {
+          isSuccess = true;
+          savedClient = _activeGoogleClients[task]; // টোকেনটা সেভ করে রাখছি
+        } else {
+          _showSnack(
+            context,
+            'Please click Authenticate JSON first!',
+            AppColors.dangerRed,
+          );
+        }
+      } else {
+        // ৩. API (Brevo/SendGrid) - এগুলোতে আগে থেকেই ভ্যালিডেশন আছে
+        isSuccess = true;
+      }
+    } catch (e) {
+      isSuccess = false;
+      _showSnack(
+        context,
+        'Connection Failed! Check credentials.',
+        AppColors.dangerRed,
+      );
+    }
+
+    if (isSuccess) {
+      task.rotationAccounts.add({
+        'method': task.sendMethod,
+        'email': task.emailCtrl.text.trim(),
+        'password': task.appPassCtrl.text.trim(),
+        'host': task.smtpHostCtrl.text,
+        'port': task.smtpPortCtrl.text,
+        'jsonPath': task.googleJsonPath,
+        'apiToken': task.sendMethod.contains('SendGrid')
+            ? task.sendGridApiKey
+            : task.brevoApiKey,
+        'googleClient': savedClient, // ডাইনামিক ক্লায়েন্ট সেভ
+      });
+
+      _showSnack(
+        context,
+        '✓ Verified & Added to Rotation!',
+        AppColors.successGreen,
+      );
+
+      // বক্সগুলো ফাঁকা করে দেবে পরেরটার জন্য
+      task.emailCtrl.clear();
+      task.appPassCtrl.clear();
+      task.googleJsonPath = '';
+      task.googleJsonName = '';
+      task.sendGridApiKey = '';
+      task.sendGridApiCtrl.clear();
+      task.brevoApiKey = '';
+      task.brevoApiCtrl.clear();
+      _activeGoogleClients.remove(task);
+    }
+
+    setState(() => task.isAddingAccount = false);
+  }
+
+  void _removeRotationAccount(_MailTask task, int index) {
+    setState(() => task.rotationAccounts.removeAt(index));
+  }
+
   bool _validateSmtp(_MailTask task) {
     if (task.sendMethod == 'Google API JSON') {
       if (task.emailCtrl.text.trim().isEmpty) {
@@ -921,9 +1067,67 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
       return true;
     }
+    // ================================================================
+    // ── NEW: SENDGRID VALIDATION BYPASS ──
+    // ================================================================
+    if (task.sendMethod == 'Direct API (SendGrid)') {
+      if (task.emailCtrl.text.trim().isEmpty ||
+          !task.emailCtrl.text.contains('@')) {
+        _showSnack(context, 'Enter valid Sender Email!', AppColors.dangerRed);
+        return false;
+      }
+      if (task.sendGridApiKey.isEmpty) {
+        _showSnack(
+          context,
+          'Please SAVE your SendGrid API Key!',
+          AppColors.dangerRed,
+        );
+        return false;
+      }
+      if (task.subjectCtrl.text.trim().isEmpty && task.subjectsList.isEmpty) {
+        _showSnack(context, 'Enter Email Subject!', AppColors.dangerRed);
+        return false;
+      }
+      if (task.bodyCtrl.text.trim().isEmpty &&
+          task.bodyList.isEmpty &&
+          task.descType != 'HTML File') {
+        _showSnack(context, 'Write email body!', AppColors.dangerRed);
+        return false;
+      }
+      return true; // পাসওয়ার্ড চেক না করেই মেইল ফায়ার করতে দেবে
+    }
     if (task.emailCtrl.text.trim().isEmpty) {
       _showSnack(context, 'Enter From Email!', AppColors.dangerRed);
       return false;
+    }
+    // ================================================================
+    // ── NEW: BREVO VALIDATION BYPASS ──
+    // ================================================================
+    if (task.sendMethod == 'Direct API (Brevo)') {
+      if (task.emailCtrl.text.trim().isEmpty ||
+          !task.emailCtrl.text.contains('@')) {
+        _showSnack(context, 'Enter valid Sender Email!', AppColors.dangerRed);
+        return false;
+      }
+      if (task.brevoApiKey.isEmpty) {
+        _showSnack(
+          context,
+          'Please SAVE your Brevo API Key!',
+          AppColors.dangerRed,
+        );
+        return false;
+      }
+      if (task.subjectCtrl.text.trim().isEmpty && task.subjectsList.isEmpty) {
+        _showSnack(context, 'Enter Email Subject!', AppColors.dangerRed);
+        return false;
+      }
+      if (task.bodyCtrl.text.trim().isEmpty &&
+          task.bodyList.isEmpty &&
+          task.descType != 'HTML File') {
+        _showSnack(context, 'Write email body!', AppColors.dangerRed);
+        return false;
+      }
+      return true; // পাসওয়ার্ড চেক না করেই মেইল ফায়ার করতে দেবে
     }
     if (!task.emailCtrl.text.contains('@')) {
       _showSnack(context, 'Invalid email!', AppColors.dangerRed);
@@ -1038,7 +1242,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   // ================================================================
-  //  GOOGLE API JSON SEND (Direct Service Account)
+  // 🚀 NEW: ব্রাউজার বারবার ওপেন হওয়া বন্ধ করার জন্য ক্লায়েন্ট সেভ রাখার মেমোরি
+  // ================================================================
+  final Map<_MailTask, auth.AutoRefreshingAuthClient> _activeGoogleClients = {};
+
+  // ================================================================
+  //  GOOGLE API JSON SEND (OAuth 2.0 Desktop Flow)
   // ================================================================
   Future<bool> _sendViaGoogleJson({
     required _MailTask task,
@@ -1051,20 +1260,60 @@ class _DashboardScreenState extends State<DashboardScreen>
   }) async {
     try {
       final jsonStr = await File(task.googleJsonPath).readAsString();
-      final credentials = auth.ServiceAccountCredentials.fromJson(jsonStr);
+      final Map<String, dynamic> jsonData = jsonDecode(jsonStr);
 
-      // ক্লায়েন্ট তৈরি করা হচ্ছে
-      final client = await auth.clientViaServiceAccount(credentials, [
-        gmail.GmailApi.mailGoogleComScope,
-      ]);
+      final clientData = jsonData['installed'] ?? jsonData['web'];
+
+      if (clientData == null) {
+        throw Exception(
+          "Auth Failed: Invalid OAuth JSON file! Please use OAuth 2.0 Client ID JSON.",
+        );
+      }
+
+      final clientId = auth.ClientId(
+        clientData['client_id'],
+        clientData['client_secret'],
+      );
+
+      auth.AutoRefreshingAuthClient client;
+
+      // 🚀 FIXED FOR MULTITASKING: শুধু এই নির্দিষ্ট টাস্কের ক্রেডেনশিয়াল চেক করা হচ্ছে
+      if (_activeGoogleClients.containsKey(task)) {
+        client = _activeGoogleClients[task]!;
+      } else {
+        client = await auth.clientViaUserConsent(
+          clientId,
+          [gmail.GmailApi.mailGoogleComScope],
+          (String url) async {
+            // ==========================================
+            // 🚀 NEW: ডাইরেক্ট পাসওয়ার্ড পেজে যাওয়ার ট্রিক (login_hint)
+            // ==========================================
+            String userEmail = task.emailCtrl.text.trim();
+
+            String finalUrl = url;
+            if (userEmail.isNotEmpty) {
+              finalUrl = "$url&login_hint=$userEmail";
+            }
+
+            await Process.run('powershell', [
+              '-NoProfile',
+              '-Command',
+              'Start-Process \'$finalUrl\'',
+            ]);
+          },
+        );
+        // এই নির্দিষ্ট টাস্কের জন্য মেমোরিতে আলাদাভাবে সেভ রাখা হচ্ছে
+        _activeGoogleClients[task] = client;
+      }
 
       final gmailApi = gmail.GmailApi(client);
 
-      // ইমেইলের জন্য একটি ইউনিক বাউন্ডারি তৈরি করা
+      final profile = await gmailApi.users.getProfile('me');
+      final senderEmail = profile.emailAddress ?? "unknown@gmail.com";
+
       String boundary =
           "premium_mailer_boundary_${DateTime.now().millisecondsSinceEpoch}";
 
-      // যদি ইউজার Plain Text ফাঁকা রাখে, তবে একটি ডিফল্ট মেসেজ যাবে
       String plainText = altBody.isNotEmpty
           ? altBody
           : 'Please view this email in an HTML-compatible client.';
@@ -1072,10 +1321,9 @@ class _DashboardScreenState extends State<DashboardScreen>
       // ================================================================
       // ── NEW: DEVICE AGENT ROTATION (INBOX BOOST) LOGIC ──
       // ================================================================
-      String deviceHeaders = ""; // ডিফল্টভাবে ফাঁকা থাকবে
+      String deviceHeaders = "";
       if (task.deviceAgentRotation) {
         String selectedDevice = _getRandomDeviceAgent();
-        // ইউজার অপশন অন রাখলে ডিভাইসের নাম ইমেইলের হেডারের জন্য তৈরি হবে
         deviceHeaders =
             "User-Agent: $selectedDevice\n"
             "X-Mailer: $selectedDevice\n";
@@ -1083,15 +1331,24 @@ class _DashboardScreenState extends State<DashboardScreen>
           'Google API Device Rotation Active: Sending as $selectedDevice',
         );
       }
+
+      // ==========================================
+      // ── SPAM BYPASS: TRUST HEADER (List-Unsubscribe) ──
+      // ==========================================
+      if (task.addUnsubscribeHeader) {
+        String senderMail = task.emailCtrl.text.trim();
+        deviceHeaders +=
+            "List-Unsubscribe: <mailto:$senderMail?subject=Unsubscribe>\n"
+            "List-Unsubscribe-Post: List-Unsubscribe=One-Click\n";
+      }
       // ================================================================
 
-      // Multipart/Alternative ফরম্যাটে ইমেইল বডি তৈরি
       String rawEmail =
-          "From: $fromDisplay <${credentials.email}>\n"
+          "From: $fromDisplay <$senderEmail>\n"
           "To: $toEmail\n"
           "Subject: $subject\n"
           "MIME-Version: 1.0\n"
-          "$deviceHeaders" // <--- ম্যাজিক হেডারটি ঠিক এখানে ইনজেক্ট করা হলো
+          "$deviceHeaders"
           "Content-Type: multipart/alternative; boundary=\"$boundary\"\n\n"
           "--$boundary\n"
           "Content-Type: text/plain; charset=utf-8\n\n"
@@ -1105,10 +1362,177 @@ class _DashboardScreenState extends State<DashboardScreen>
         ..raw = base64UrlEncode(utf8.encode(rawEmail));
 
       await gmailApi.users.messages.send(message, 'me');
-      client.close();
       return true;
     } catch (e) {
       debugPrint('Google API Error: $e');
+      return false;
+    }
+  }
+
+  // ================================================================
+  //  NEW: DIRECT API SEND (SENDGRID INBOX METHOD)
+  // ================================================================
+  Future<bool> _sendViaSendGridApi({
+    required _MailTask task,
+    required String toEmail,
+    required String toName,
+    required String subject,
+    required String body,
+    required String altBody,
+    required String fromDisplay,
+  }) async {
+    try {
+      if (task.sendGridApiKey.isEmpty) {
+        throw Exception("Auth Failed: SendGrid API Key is missing!");
+      }
+
+      final url = Uri.parse('https://api.sendgrid.com/v3/mail/send');
+      final senderEmail = task.emailCtrl.text.trim();
+
+      // Plain Text এবং HTML হ্যান্ডেল করার লজিক
+      List<Map<String, String>> contentArray = [];
+
+      if (task.descType == 'Plain Text') {
+        contentArray.add({"type": "text/plain", "value": body});
+      } else if (task.descType == 'Plain + HTML') {
+        contentArray.add({
+          "type": "text/plain",
+          "value": altBody.isNotEmpty
+              ? altBody
+              : body.replaceAll(RegExp(r'<[^>]*>'), '').trim(),
+        });
+        contentArray.add({"type": "text/html", "value": body});
+      } else {
+        contentArray.add({"type": "text/html", "value": body});
+      }
+
+      // API Payload তৈরি
+      Map<String, dynamic> payload = {
+        "personalizations": [
+          {
+            "to": [
+              {"email": toEmail, "name": toName},
+            ],
+            "subject": subject,
+          },
+        ],
+        "from": {
+          "email": senderEmail.isNotEmpty ? senderEmail : "info@example.com",
+          "name": fromDisplay.isNotEmpty ? fromDisplay : "Support",
+        },
+        "content": contentArray,
+      };
+
+      // ── DEVICE AGENT ROTATION (INBOX BOOST) ──
+      if (task.deviceAgentRotation) {
+        String selectedDevice = _getRandomDeviceAgent();
+        payload["personalizations"][0]["headers"] = {
+          'User-Agent': selectedDevice,
+          'X-Mailer': selectedDevice,
+        };
+      }
+
+      // SendGrid-এ POST রিকোয়েস্ট (Bearer Token দিয়ে)
+      final response = await http.post(
+        url,
+        headers: {
+          'Authorization': 'Bearer ${task.sendGridApiKey}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(payload),
+      );
+
+      // SendGrid 202 Accepted রিটার্ন করে সাকসেস হলে
+      if (response.statusCode == 202) {
+        return true;
+      } else {
+        debugPrint('SendGrid API Rejected: ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      debugPrint('SendGrid API Error: $e');
+      return false;
+    }
+  }
+
+  // ================================================================
+  //  NEW: DIRECT API SEND (BREVO INBOX METHOD)
+  // ================================================================
+  Future<bool> _sendViaBrevoApi({
+    required _MailTask task,
+    required String toEmail,
+    required String toName,
+    required String subject,
+    required String body,
+    required String altBody,
+    required String fromDisplay,
+  }) async {
+    try {
+      if (task.brevoApiKey.isEmpty) {
+        throw Exception("Auth Failed: Brevo API Key is missing!");
+      }
+
+      final url = Uri.parse('https://api.brevo.com/v3/smtp/email');
+      final senderEmail = task.emailCtrl.text.trim();
+
+      // ================================================================
+      // ── NEW: DEVICE AGENT ROTATION (INBOX BOOST) LOGIC ──
+      // ================================================================
+      Map<String, String> extraHeaders = {};
+      if (task.deviceAgentRotation) {
+        String selectedDevice = _getRandomDeviceAgent();
+        extraHeaders = {
+          'User-Agent': selectedDevice,
+          'X-Mailer': selectedDevice,
+        };
+      }
+
+      // API Payload তৈরি
+      Map<String, dynamic> payload = {
+        "sender": {
+          "name": fromDisplay.isNotEmpty ? fromDisplay : "Support",
+          "email": senderEmail.isNotEmpty ? senderEmail : "info@example.com",
+        },
+        "to": [
+          {"email": toEmail, "name": toName},
+        ],
+        "subject": subject,
+      };
+
+      if (extraHeaders.isNotEmpty) {
+        payload["headers"] = extraHeaders;
+      }
+
+      if (task.descType == 'Plain Text') {
+        payload["textContent"] = body;
+      } else if (task.descType == 'Plain + HTML') {
+        payload["htmlContent"] = body;
+        payload["textContent"] = altBody.isNotEmpty
+            ? altBody
+            : body.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+      } else {
+        payload["htmlContent"] = body;
+      }
+
+      // API তে POST রিকোয়েস্ট পাঠানো
+      final response = await http.post(
+        url,
+        headers: {
+          'accept': 'application/json',
+          'api-key': task.brevoApiKey,
+          'content-type': 'application/json',
+        },
+        body: jsonEncode(payload),
+      );
+
+      if (response.statusCode == 201) {
+        return true; // 100% Success
+      } else {
+        debugPrint('Brevo API Rejected: ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      debugPrint('Brevo API Error: $e');
       return false;
     }
   }
@@ -1133,8 +1557,29 @@ class _DashboardScreenState extends State<DashboardScreen>
     String antiSpamAltBody = altBody.isNotEmpty
         ? altBody + _generateInvisibleHash()
         : '';
+    if (task.sendMethod == 'Direct API (SendGrid)') {
+      return _sendViaSendGridApi(
+        task: task,
+        toEmail: toEmail,
+        toName: toName,
+        subject: antiSpamSubject,
+        body: antiSpamBody,
+        altBody: antiSpamAltBody,
+        fromDisplay: fromDisplay,
+      );
+    }
     // ================================================================
-
+    if (task.sendMethod == 'Direct API (Brevo)') {
+      return _sendViaBrevoApi(
+        task: task,
+        toEmail: toEmail,
+        toName: toName,
+        subject: antiSpamSubject,
+        body: antiSpamBody,
+        altBody: antiSpamAltBody,
+        fromDisplay: fromDisplay,
+      );
+    }
     if (task.sendMethod == 'Google API JSON') {
       return _sendViaGoogleJson(
         task: task,
@@ -1242,7 +1687,15 @@ class _DashboardScreenState extends State<DashboardScreen>
         );
       }
       // ================================================================
-
+      // ==========================================
+      // ── SPAM BYPASS: TRUST HEADER (List-Unsubscribe) ──
+      // ==========================================
+      if (task.addUnsubscribeHeader) {
+        String senderEmail = task.emailCtrl.text.trim();
+        msg.headers['List-Unsubscribe'] =
+            '<mailto:$senderEmail?subject=Unsubscribe>';
+        msg.headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+      }
       if (task.headers['Priority'] ?? false) {
         msg.headers['X-Priority'] = '1';
         msg.headers['X-MSMail-Priority'] = 'High';
@@ -1415,8 +1868,38 @@ class _DashboardScreenState extends State<DashboardScreen>
 
       currentSubject = rep(currentSubject);
       currentBody = rep(currentBody);
-      currentAltBody = rep(currentAltBody); // <--- এটি নতুন অ্যাড হলো
+      currentAltBody = rep(currentAltBody);
+      currentAltBody = rep(currentAltBody);
+      // <--- এটি নতুন অ্যাড হলো
+      // ================================================================
+      // ── NEW MAGIC: APPLY SPINTAX ON EVERY EMAIL ──
+      // ================================================================
+      currentSubject = _applySpintax(currentSubject);
+      currentBody = _applySpintax(currentBody);
+      currentAltBody = _applySpintax(currentAltBody);
 
+      currentSubject = _applySpintax(currentSubject);
+      currentBody = _applySpintax(currentBody);
+      currentAltBody = _applySpintax(currentAltBody);
+
+      // ================================================================
+      // ── NEW MAGIC: SMART URL/LINK RANDOMIZER ──
+      // ================================================================
+      if (task.linkRandomizer) {
+        final randRef = _randomString(8); // ৮ অক্ষরের ইউনিক কোড
+        currentBody = currentBody.replaceAllMapped(RegExp(r'href="([^"]+)"'), (
+          match,
+        ) {
+          String url = match.group(1) ?? '';
+          if (url.startsWith('http')) {
+            // লিংকের শেষে ?ref=A8K9X2 এরকম ট্র্যাকিং বসিয়ে দেবে
+            return url.contains('?')
+                ? 'href="$url&ref=$randRef"'
+                : 'href="$url?ref=$randRef"';
+          }
+          return match.group(0)!; // http না থাকলে আগের মতোই রেখে দেবে
+        });
+      }
       // ================================================================
       // ── DELAY LOGIC: DYNAMIC vs FIXED (আপনার নিয়মে) ──
       // ================================================================
@@ -1448,6 +1931,44 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
       // ================================================================
       if (!task.isSending) break;
+      // ================================================================
+      // ── BATCH ROTATION LOGIC (Temporary Override) ──
+      // ================================================================
+      String originalMethod = task.sendMethod;
+      String originalEmail = task.emailCtrl.text;
+      String originalPass = task.appPassCtrl.text;
+      String originalHost = task.smtpHostCtrl.text;
+      String originalPort = task.smtpPortCtrl.text;
+      String originalJsonPath = task.googleJsonPath;
+      String originalSendGrid = task.sendGridApiKey;
+      String originalBrevo = task.brevoApiKey;
+      auth.AutoRefreshingAuthClient? originalClient =
+          _activeGoogleClients[task];
+
+      if (task.enableRotation && task.rotationAccounts.isNotEmpty) {
+        int limit = task.rotationBatchSize > 0 ? task.rotationBatchSize : 1;
+        int rotIndex = (i ~/ limit) % task.rotationAccounts.length;
+        var currentAcc = task.rotationAccounts[rotIndex];
+
+        task.sendMethod = currentAcc['method'];
+        task.emailCtrl.text = currentAcc['email'];
+        task.appPassCtrl.text = currentAcc['password'] ?? '';
+        task.smtpHostCtrl.text = currentAcc['host'] ?? '';
+        task.smtpPortCtrl.text = currentAcc['port'] ?? '';
+        task.googleJsonPath = currentAcc['jsonPath'] ?? '';
+
+        if (currentAcc['method'] == 'Direct API (SendGrid)')
+          task.sendGridApiKey = currentAcc['apiToken'] ?? '';
+        if (currentAcc['method'] == 'Direct API (Brevo)')
+          task.brevoApiKey = currentAcc['apiToken'] ?? '';
+        if (currentAcc['googleClient'] != null)
+          _activeGoogleClients[task] = currentAcc['googleClient'];
+
+        // স্পুফ নেম ফাঁকা থাকলে ইমেইলটাই স্পুফ হয়ে যাবে
+        if (task.spoofNameCtrl.text.trim().isEmpty && !task.spoofMultiple) {
+          currentSpoof = task.emailCtrl.text;
+        }
+      }
 
       final success = await _sendOneEmail(
         task: task,
@@ -1458,6 +1979,22 @@ class _DashboardScreenState extends State<DashboardScreen>
         altBody: currentAltBody, // <--- এটি নতুন অ্যাড হলো
         fromDisplay: currentSpoof,
       );
+      // ── RESTORE ORIGINAL STATE ──
+      if (task.enableRotation && task.rotationAccounts.isNotEmpty) {
+        task.sendMethod = originalMethod;
+        task.emailCtrl.text = originalEmail;
+        task.appPassCtrl.text = originalPass;
+        task.smtpHostCtrl.text = originalHost;
+        task.smtpPortCtrl.text = originalPort;
+        task.googleJsonPath = originalJsonPath;
+        task.sendGridApiKey = originalSendGrid;
+        task.brevoApiKey = originalBrevo;
+        if (originalClient != null) {
+          _activeGoogleClients[task] = originalClient;
+        } else {
+          _activeGoogleClients.remove(task);
+        }
+      }
 
       final logEntry = _LogEntry(
         sNo: task.totalSent + task.totalFailed + 1,
@@ -3058,11 +3595,13 @@ class _DashboardScreenState extends State<DashboardScreen>
     bool macSpoof = t.macSpoofEnabled;
     bool domainMix = t.domainMixEnabled;
     bool pcBypass = t.pcProtectionBypass;
+    bool linkRand = t.linkRandomizer;
     String macAddr = t.macAddress;
+
     final domainCtrl = TextEditingController(text: t.mixedDomains.join(', '));
     // নতুন ভেরিয়েবল: পপ-আপের ভেতরে সুইচের স্টেট ধরে রাখার জন্য
     bool deviceAgentRotation = t.deviceAgentRotation;
-
+    bool unsubHeader = t.addUnsubscribeHeader;
     showDialog(
       context: context,
       builder: (_) => StatefulBuilder(
@@ -3100,6 +3639,62 @@ class _DashboardScreenState extends State<DashboardScreen>
                         ),
                       ],
                     ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text(
+                          'Smart URL/Link Randomizer:',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        Switch(
+                          value: linkRand,
+                          activeThumbColor: AppColors.primaryCyan,
+                          onChanged: (v) => setS(() => linkRand = v),
+                        ),
+                      ],
+                    ),
+                    if (linkRand)
+                      const Text(
+                        '✅ Auto-appends unique tracking IDs to links to prevent URL blacklisting.',
+                        style: TextStyle(
+                          color: AppColors.primaryCyan,
+                          fontSize: 10,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text(
+                          'Auto List-Unsubscribe Header:',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        Switch(
+                          value: unsubHeader,
+                          activeThumbColor: AppColors.successGreen,
+                          onChanged: (v) => setS(() => unsubHeader = v),
+                        ),
+                      ],
+                    ),
+                    if (unsubHeader)
+                      const Text(
+                        '✅ Adds a trusted unsubscribe button in Gmail/Yahoo to prevent spam reports.',
+                        style: TextStyle(
+                          color: AppColors.successGreen,
+                          fontSize: 10,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
                     if (pcBypass)
                       const Text(
                         '⚠️ Obfuscating payloads to bypass firewall.',
@@ -3258,6 +3853,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                           t.macAddress = macAddr;
                           t.deviceAgentRotation =
                               deviceAgentRotation; // নতুন ভ্যালু সেভ করা হলো
+                          t.addUnsubscribeHeader = unsubHeader;
+                          t.linkRandomizer = linkRand;
                           t.mixedDomains = domainCtrl.text
                               .split(',')
                               .map((d) => d.trim())
@@ -3586,6 +4183,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                           '6-char — randomized per email',
                           AppColors.textMuted,
                         ),
+
+                        _tagGuideRow(
+                          '{A|B|C}',
+                          'Spintax (Text Spinner)',
+                          'Bypasses Spam Filters! Picks a random word.\nExample: {Hi|Hello|Hey} {friend|mate}!',
+                          AppColors.warning,
+                        ),
                       ],
                     ),
                   ),
@@ -3603,11 +4207,15 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
                 ),
                 child: const Text(
-                  '💡 TIP: Use {name} in subject line for better inbox delivery.\n   "Dear {name}, Your order #{tracking} is ready!"\n   "Invoice #{random} from {date} — Amount: {amount}"',
+                  '💡 PRO TIPS FOR 100% INBOX:\n'
+                  '1. Use Spintax to make every email unique! Ex: "{Hi|Hello} {name}, check our {new|latest} offer!"\n'
+                  '2. Use {name} in the subject line. Ex: "Dear {name}, Order #{tracking} is ready!"\n'
+                  '3. Add {random} at the end of links to avoid URL blacklisting.',
                   style: TextStyle(
                     color: AppColors.secondaryPurple,
-                    fontSize: 11,
-                    height: 1.5,
+                    fontSize: 10,
+                    height: 1.6,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
@@ -4271,6 +4879,9 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   // ── LEFT PANEL ──
   Widget _buildLeftPanel(_MailTask task) {
+    // 🚀 ম্যাজিক লজিক: চেক করা হচ্ছে এই টাস্কটা অলরেডি কানেক্টেড কি না
+    bool isConnected = _activeGoogleClients.containsKey(task);
+
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.sidebar,
@@ -4294,6 +4905,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                         _methodBtn('Custom SMTP', task),
                         _methodBtn('No Auth (Custom SMTP)', task),
                         _methodBtn('Google API JSON', task),
+                        // নতুন ডিরেক্ট API বাটন
+                        _methodBtn('Direct API (Brevo)', task),
+                        _methodBtn('Direct API (SendGrid)', task),
                       ],
                     ),
                   ]),
@@ -4408,20 +5022,29 @@ class _DashboardScreenState extends State<DashboardScreen>
                           Expanded(
                             flex: 2,
                             child: ElevatedButton.icon(
-                              icon: const Icon(
-                                Icons.verified_user_rounded,
+                              icon: Icon(
+                                isConnected
+                                    ? Icons.check_circle_outline
+                                    : Icons.verified_user_rounded,
                                 size: 12,
                               ),
-                              label: const Text(
-                                'AUTHENTICATE JSON',
-                                style: TextStyle(
+                              label: Text(
+                                isConnected
+                                    ? 'AUTHENTICATED'
+                                    : 'AUTHENTICATE JSON',
+                                style: const TextStyle(
                                   fontSize: 9,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.successGreen,
-                                foregroundColor: Colors.black,
+                                // 🚀 NEW: কানেক্টেড থাকলে বাটনটা একটু গ্রে হয়ে যাবে
+                                backgroundColor: isConnected
+                                    ? Colors.grey.shade700
+                                    : AppColors.successGreen,
+                                foregroundColor: isConnected
+                                    ? Colors.white
+                                    : Colors.black,
                                 padding: const EdgeInsets.symmetric(
                                   vertical: 10,
                                 ),
@@ -4429,7 +5052,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                               ),
-                              onPressed: () => _authenticateGoogle(task),
+                              // 🚀 NEW: কানেক্টেড থাকলে বাটন ডিজেবল (null) হয়ে যাবে
+                              onPressed: isConnected
+                                  ? null
+                                  : () => _authenticateGoogle(task),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -4460,6 +5086,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                                   task.googleJsonPath = '';
                                   task.googleJsonName = '';
                                   task.googleApiToken = '';
+                                  // 🚀 FIXED: রিসেট করলে মেমোরি থেকেও লগইন সেশন ডিলিট হয়ে যাবে!
+                                  _activeGoogleClients.remove(task);
                                 });
                                 _showSnack(
                                   context,
@@ -4470,6 +5098,151 @@ class _DashboardScreenState extends State<DashboardScreen>
                             ),
                           ),
                         ],
+                      ),
+                    ]),
+                  ] else if (task.sendMethod == 'Direct API (SendGrid)') ...[
+                    _sectionBox(
+                      'SENDGRID API CREDENTIALS',
+                      AppColors.successGreen,
+                      [
+                        _labelInput(
+                          'From Email (Verified Sender in SendGrid)',
+                          task.emailCtrl,
+                          'e.g. support@ebong.online',
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Expanded(
+                              child: _labelInput(
+                                'SendGrid API Key',
+                                task.sendGridApiCtrl,
+                                'SG.xxxxxxxxxxxxxxxxxxx...',
+                                obscure: true,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            ElevatedButton.icon(
+                              icon: const Icon(
+                                Icons.cleaning_services_rounded,
+                                size: 12,
+                              ),
+                              label: const Text(
+                                'CLEAR',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.dangerRed,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 10,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  task.sendGridApiCtrl.clear();
+                                  task.sendGridApiKey = '';
+                                });
+                                _showSnack(
+                                  context,
+                                  '✓ API Key Cleared!',
+                                  AppColors.warning,
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.save_rounded, size: 12),
+                            label: const Text(
+                              'SAVE API KEY',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.successGreen,
+                              foregroundColor: Colors.black,
+                            ),
+                            onPressed: () {
+                              if (task.sendGridApiCtrl.text.trim().isEmpty) {
+                                _showSnack(
+                                  context,
+                                  'Please enter API Key first!',
+                                  AppColors.dangerRed,
+                                );
+                                return;
+                              }
+                              setState(
+                                () => task.sendGridApiKey = task
+                                    .sendGridApiCtrl
+                                    .text
+                                    .trim(),
+                              );
+                              _showSnack(
+                                context,
+                                '✓ SendGrid API Key Saved!',
+                                AppColors.successGreen,
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else if (task.sendMethod == 'Direct API (Brevo)') ...[
+                    _sectionBox('BREVO API CREDENTIALS', AppColors.warning, [
+                      _labelInput(
+                        'From Email (Verified Sender in Brevo)',
+                        task.emailCtrl,
+                        'e.g. support@ebong.online',
+                      ),
+                      const SizedBox(height: 6),
+                      _labelInput(
+                        'Brevo API Key (v3)',
+                        task.brevoApiCtrl,
+                        'xkeysib-xxxxxxxxxxxxxxxxxxxx...',
+                        obscure: true,
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: ElevatedButton.icon(
+                          icon: const Icon(Icons.save_rounded, size: 12),
+                          label: const Text(
+                            'SAVE API KEY',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.warning,
+                            foregroundColor: Colors.black,
+                          ),
+                          onPressed: () {
+                            setState(
+                              () => task.brevoApiKey = task.brevoApiCtrl.text
+                                  .trim(),
+                            );
+                            _showSnack(
+                              context,
+                              '✓ Brevo API Key Saved!',
+                              AppColors.successGreen,
+                            );
+                          },
+                        ),
                       ),
                     ]),
                   ] else ...[
@@ -4693,6 +5466,142 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ],
 
                   const SizedBox(height: 6),
+                  // ================================================================
+                  // ── NEW: SENDER ROTATION UI ──
+                  // ================================================================
+                  const SizedBox(height: 6),
+                  _sectionBox('BATCH SENDER ROTATION', AppColors.warning, [
+                    Row(
+                      children: [
+                        const Text(
+                          'Enable Batch Rotation:',
+                          style: TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 10,
+                          ),
+                        ),
+                        const Spacer(),
+                        Switch(
+                          value: task.enableRotation,
+                          activeThumbColor: AppColors.warning,
+                          onChanged: (v) =>
+                              setState(() => task.enableRotation = v),
+                        ),
+                      ],
+                    ),
+                    if (task.enableRotation) ...[
+                      Row(
+                        children: [
+                          const Text(
+                            'Rotate After:',
+                            style: TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 9,
+                            ),
+                          ),
+                          Expanded(
+                            child: Slider(
+                              value: task.rotationBatchSize.toDouble(),
+                              min: 1,
+                              max: 50,
+                              divisions: 50,
+                              activeColor: AppColors.warning,
+                              onChanged: (v) => setState(
+                                () => task.rotationBatchSize = v.toInt(),
+                              ),
+                            ),
+                          ),
+                          Text(
+                            '${task.rotationBatchSize} emails',
+                            style: const TextStyle(
+                              color: AppColors.warning,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: ElevatedButton.icon(
+                          icon: task.isAddingAccount
+                              ? const SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.black,
+                                  ),
+                                )
+                              : const Icon(Icons.add_task_rounded, size: 12),
+                          label: Text(
+                            task.isAddingAccount
+                                ? 'VERIFYING...'
+                                : 'VERIFY & ADD TO LIST',
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.warning,
+                            foregroundColor: Colors.black,
+                            minimumSize: const Size(0, 30),
+                          ),
+                          onPressed: task.isAddingAccount
+                              ? null
+                              : () => _verifyAndAddAccount(task),
+                        ),
+                      ),
+                      if (task.rotationAccounts.isNotEmpty) ...[
+                        const Divider(color: AppColors.border),
+                        Text(
+                          'Verified Accounts (${task.rotationAccounts.length}):',
+                          style: const TextStyle(
+                            color: AppColors.successGreen,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        ...List.generate(task.rotationAccounts.length, (index) {
+                          final acc = task.rotationAccounts[index];
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 4),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black26,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: AppColors.border),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${index + 1}. ${acc['email']} [${acc['method']}]',
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ),
+                                InkWell(
+                                  onTap: () =>
+                                      _removeRotationAccount(task, index),
+                                  child: const Icon(
+                                    Icons.delete,
+                                    color: AppColors.dangerRed,
+                                    size: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      ],
+                    ],
+                  ]),
 
                   // ── PER-SMTP SEND LIMIT (per-task) ───
                   _sectionBox(
@@ -6815,6 +7724,14 @@ class _MailTask {
   String spamScore = '—';
   bool saveLogs = false;
   int maxSendPerSmtp = 0; // 0 = unlimited
+  // ==========================================
+  // ── SENDER ROTATION VARIABLES ──
+  // ==========================================
+  bool enableRotation = false;
+  int rotationBatchSize = 1; // কয়টা মেইল পর অ্যাকাউন্ট ঘুরবে
+  List<Map<String, dynamic>> rotationAccounts =
+      []; // ভেরিফাইড অ্যাকাউন্টের লিস্ট
+  bool isAddingAccount = false; // অ্যাড করার সময় স্পিনার দেখানোর জন্য
 
   // ── Per-task attachments ──
   List<String> attachmentPaths = [];
@@ -6823,8 +7740,11 @@ class _MailTask {
   bool useDynamicDelay = false; // ── NEW: Human-Like Delay এর জন্য ──
   bool renameAttachmentRandomly = false; // <--- এই নতুন লাইনটা অ্যাড করুন
   String? convertTargetFormat; // কনভার্ট করার ফরম্যাটটি এখানে সেভ থাকবে
+  bool addUnsubscribeHeader = false; // ── Trust Header (Auto Unsubscribe) ──
+  bool linkRandomizer = false; // ── Smart URL/Link Randomizer ──
 
   // ── Per-task recipients ──
+
   List<String> recipientList = [];
   List<Map<String, dynamic>> recipientData = [];
 
@@ -6862,7 +7782,12 @@ class _MailTask {
   final altBodyCtrl = TextEditingController();
   final convertApiCtrl = TextEditingController(); // টোকেন ইনপুটের জন্য
   String convertApiToken = ''; // টোকেন সেভ রাখার জন্য
-
+  // ── NEW: BREVO API VARIABLES ──
+  final brevoApiCtrl = TextEditingController();
+  String brevoApiKey = '';
+  // ── NEW: SENDGRID API VARIABLES ──
+  final sendGridApiCtrl = TextEditingController();
+  String sendGridApiKey = '';
   _MailTask({required this.id});
 
   void dispose() {
