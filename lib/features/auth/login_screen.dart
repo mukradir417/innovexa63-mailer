@@ -160,7 +160,7 @@ class _LoginScreenState extends State<LoginScreen>
       }
 
       // ================================================================
-      // ── Step 3.5: SINGLE DEVICE LOGIN LOGIC ──
+      //  ── Step 3.5: SINGLE DEVICE LOGIN LOGIC ──
       // ================================================================
       final String localDeviceId = await _getLocalDeviceId();
       final String? activeDeviceId = data['current_device_id'];
@@ -707,41 +707,58 @@ class _LoginScreenState extends State<LoginScreen>
   Widget _buildFooter() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: AppColors.sidebar.withOpacity(0.7),
         borderRadius: BorderRadius.circular(11),
-        border: Border.all(color: AppColors.border.withOpacity(0.5)),
+        border: Border.all(color: AppColors.primaryCyan.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primaryCyan.withOpacity(0.05),
+            blurRadius: 15,
+            spreadRadius: 1,
+          ),
+        ],
       ),
-      child: Column(
+      child: Row(
         children: [
-          const Text(
-            'Need access? Contact INNOVEXA63 Support',
-            style: TextStyle(color: AppColors.textMuted, fontSize: 9.5),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppColors.primaryCyan.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.admin_panel_settings_rounded,
+              color: AppColors.primaryCyan,
+              size: 20,
+            ),
           ),
-          const SizedBox(height: 8),
-          Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 16,
-            runSpacing: 6,
-            children: const [
-              _ContactChip(
-                icon: Icons.phone_rounded,
-                label: 'whatsapp : 01777518241',
-                color: AppColors.successGreen,
-              ),
-              _ContactChip(
-                icon: Icons.language_rounded,
-                label: 'innovexa63.com',
-                color: AppColors.primaryCyan,
-              ),
-            ],
-          ),
-          const SizedBox(height: 5),
-          const _ContactChip(
-            icon: Icons.email_rounded,
-            label: 'innovexa63@gmail.com',
-            color: AppColors.secondaryPurple,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'RESTRICTED SYSTEM ACCESS',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                SizedBox(height: 3),
+                Text(
+                  'To request a new license, account access, or technical support, please contact your System Administrator.',
+                  style: TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 9,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
